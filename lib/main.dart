@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -14,23 +16,38 @@ import 'services/user_repository.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    // Production face embedder. Defaults to mobilefacenet-v1 (float32) per
+    // tech-plan §314 — switch to mobilefacenet-v1-q (int8 dynamic-range)
+    // only if the latency gate flags p95 > 300 ms on a low-end Android,
+    // and bump the modelVersion stamp at the same time so the wire format
+    // isn't a silent swap. The .tflite is gitignored; tools/fetch_model.sh
+    // fetches it before `flutter run`.
+    final FaceEmbedder embedder = await MobileFaceNetEmbedder.create();
 
-  // Production face embedder. Defaults to mobilefacenet-v1 (float32) per
-  // tech-plan §314 — switch to mobilefacenet-v1-q (int8 dynamic-range) only
-  // if the latency gate flags p95 > 300 ms on a low-end Android, and bump
-  // the modelVersion stamp at the same time so the wire format isn't a
-  // silent swap. The .tflite is gitignored; tools/fetch_model.sh fetches
-  // it before `flutter run`.
-  final FaceEmbedder embedder = await MobileFaceNetEmbedder.create();
-
-  runApp(SnapshotApp(
-    auth: FirebaseAuthBootstrap(),
-    users: FirestoreUserRepository(),
-    embedder: embedder,
-  ));
+    runApp(SnapshotApp(
+      auth: FirebaseAuthBootstrap(),
+      users: FirestoreUserRepository(),
+      embedder: embedder,
+    ));
+  } catch (err, stack) {
+    // Anything before runApp throws into a no-UI void — wrap it so the
+    // user sees the same _BootError surface the in-app FutureBuilder uses
+    // for auth/profile-fetch failures, instead of a blank screen.
+    debugPrint('Snapshot boot failed before first frame: $err\n$stack');
+    runApp(MaterialApp(
+      title: 'Snapshot',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: _BootError(error: err),
+    ));
+  }
 }
 
 class SnapshotApp extends StatefulWidget {
@@ -56,6 +73,17 @@ class _SnapshotAppState extends State<SnapshotApp> {
   void initState() {
     super.initState();
     _bootFuture = _boot();
+  }
+
+  @override
+  void dispose() {
+    // Best-effort release of native resources (TFLite interpreter + ML Kit
+    // face detector). Mostly relevant for dev hot-restart, where the
+    // process keeps running and a fresh embedder is created on each
+    // restart — without this, each restart leaks one set of natives.
+    // Production teardown (process exit) reclaims either way.
+    unawaited(widget.embedder.close());
+    super.dispose();
   }
 
   Future<UserProfile?> _boot() async {
