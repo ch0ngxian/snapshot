@@ -7,7 +7,9 @@ for on-device face embedding (per tech-plan.md §5.7).
 
 - Reference repo: <https://github.com/sirius-ai/MobileFaceNet_TF>
 - License: Apache 2.0
-- Sourcing: see `tools/fetch_model.sh`
+- Build pipeline: `tools/build_model.py` (downloads upstream frozen graph, converts to tflite)
+- Hosted on this repo's GitHub Release [`model/mobilefacenet-v1`](https://github.com/ch0ngxian/snapshot/releases/tag/model/mobilefacenet-v1)
+- Fetched at setup time via `tools/fetch_model.sh` (default = float32; `VARIANT=q` for int8 dynamic-range)
 
 ## Model contract
 
@@ -25,7 +27,8 @@ will need updating, plus a `modelVersion` bump to a new identifier.
 
 ## Status
 
-The binary is intentionally not committed yet — see `tools/fetch_model.sh` for
-the fetching plan. Until that script's `MODEL_URL` and `MODEL_SHA256` are pinned
-to a verified Apache-2.0 mirror, drop a compatible file here manually and rerun
-`flutter pub get`.
+The binary is not committed to the repo (`*.tflite` is gitignored). Run
+`bash tools/fetch_model.sh` after cloning to pull the float32 variant
+(`mobilefacenet-v1`) from the pinned GitHub Release; the script verifies
+SHA256 before placing the file at `assets/models/mobilefacenet.tflite`.
+Then `flutter pub get && flutter run`.
