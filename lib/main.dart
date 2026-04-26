@@ -20,7 +20,7 @@ Future<void> main() async {
 
   // TODO(phase-0-followup): swap to MobileFaceNetEmbedder.create() once the
   // .tflite asset is sourced (see tools/fetch_model.sh + assets/models/NOTICE.md).
-  // FakeFaceEmbedder produces deterministic 192-dim vectors so onboarding
+  // FakeFaceEmbedder produces deterministic 128-dim vectors so onboarding
   // wiring and Firestore writes can be exercised end-to-end in the meantime.
   const FaceEmbedder embedder = FakeFaceEmbedder();
 

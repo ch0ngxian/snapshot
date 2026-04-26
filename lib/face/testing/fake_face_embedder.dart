@@ -15,7 +15,7 @@ class FakeFaceEmbedder implements FaceEmbedder {
   String get modelVersion => 'fake-v1';
 
   @override
-  int get embeddingDim => 192;
+  int get embeddingDim => 128;
 
   /// If non-null, [embed] throws this instead of returning a vector — handy
   /// for testing error paths (e.g. `NoFaceDetectedException`).

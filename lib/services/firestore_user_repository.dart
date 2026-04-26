@@ -9,7 +9,7 @@ import 'user_repository.dart';
 /// matches tech-plan.md §3 and the validation in `firestore.rules`
 /// (`isValidUserProfile`):
 ///   displayName (string), faceEmbedding (Firestore array of doubles, length
-///   192), embeddingModelVersion (string), createdAt (Timestamp).
+///   128), embeddingModelVersion (string), createdAt (Timestamp).
 class FirestoreUserRepository implements UserRepository {
   static const String _collection = 'users';
 

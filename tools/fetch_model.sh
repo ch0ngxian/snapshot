@@ -11,7 +11,7 @@
 #
 # Expected model contract:
 #   input  : 1 × 112 × 112 × 3 NHWC float32, normalized to [-1, 1]
-#   output : 1 × 192 float32 (L2-normalize before cosine compare)
+#   output : 1 × 128 float32 (L2-normalize before cosine compare)
 #
 # Usage: bash tools/fetch_model.sh
 

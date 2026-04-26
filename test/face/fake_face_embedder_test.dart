@@ -10,7 +10,7 @@ void main() {
     test('exposes a stable modelVersion and embeddingDim', () {
       const embedder = FakeFaceEmbedder();
       expect(embedder.modelVersion, 'fake-v1');
-      expect(embedder.embeddingDim, 192);
+      expect(embedder.embeddingDim, 128);
     });
 
     test('returns deterministic L2-normalized embeddings', () async {
