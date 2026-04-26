@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+
+# Firebase secrets / local config
+.firebaserc
+*-debug.log
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.runtimeconfig.json
+service-account*.json
+*.serviceaccount.json
+
+# Node (Cloud Functions)
+node_modules/
+npm-debug.log
+.env
+.env.local
+
+# Flutter / Dart — placeholder; full Flutter ignores added with the project scaffold in PR #1
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+ios/Pods/
+ios/Runner.xcworkspace/xcuserdata/
+android/.gradle/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
