@@ -8,6 +8,11 @@
 *.iws
 snapshot.iml
 
+# Claude Code / agent harness local state
+.claude/
+.agents/
+skills-lock.json
+
 # Flutter / Dart
 .dart_tool/
 .flutter-plugins
