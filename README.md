@@ -21,28 +21,67 @@ v1 MVP — friends/family scope. See [`tech-plan.md`](./tech-plan.md) for the fu
 - Firebase CLI (`npm install -g firebase-tools`)
 - Xcode (for iOS builds) / Android Studio + SDK (for Android builds)
 
-### Run the app
+### Run the Flutter app
 
 ```bash
 flutter pub get
 flutter run
 ```
 
+The app currently shows a Phase 0 placeholder home with a *Try onboarding (demo mode)* button — that runs the onboarding flow against in-memory fakes (no Firebase, no real face model needed) so the UI can be hand-tested before production wiring lands.
+
 ### Tests
 
 ```bash
+# Flutter unit + widget tests
 flutter analyze
 flutter test
+
+# Cloud Functions tests
+cd functions
+npm install
+npm test
+```
+
+### Local Firebase emulator
+
+After running `flutterfire configure` (see Phase 0 followups below):
+
+```bash
+firebase emulators:start
+```
+
+Auth (9099), Firestore (8080), Functions (5001), Storage (9199), and the Emulator UI are all wired up via `firebase.json`.
+
+## Repository layout
+
+```
+lib/
+  face/                 — FaceEmbedder interface + MobileFaceNet + ML Kit pipeline
+  models/               — Plain-data classes (UserProfile, …)
+  onboarding/           — Three-screen onboarding flow + orchestrator
+  services/             — Service interfaces + test fakes
+functions/              — TypeScript Cloud Functions
+  src/deleteUserData.ts — per tech-plan.md §5.10
+firestore.rules         — Firestore security rules (Phase 0: users only)
+storage.rules           — Cloud Storage rules (Phase 0: selfies only)
+firestore.indexes.json  — composite index on tags.resolvedTargetUid
+remoteconfig.template.json — tag_match_threshold + borderline_half_width defaults
+firebase.json           — emulator + deploy config
+tools/fetch_model.sh    — sourcing script for the MobileFaceNet TFLite asset
 ```
 
 ## Phase 0 manual followups
 
-These steps require interactive auth or physical hardware and aren't automated by CI:
+These steps require interactive auth, physical hardware, or external decisions and aren't automated by CI:
 
-- [ ] Create the Firebase project in `asia-southeast1` and link it via `firebase use`.
-- [ ] Run `firebase deploy --only firestore:rules,storage:rules,firestore:indexes,remoteconfig,functions` once PR #3 lands.
-- [ ] Configure Cloud Storage 30-day lifecycle rule on the `tags/` prefix (per §5.9 of the plan).
-- [ ] Run the latency gate on a low-end Android (Pixel 4a / Galaxy A-series): on-device pipeline p95 must be <300ms. If it isn't, swap to the quantized embedder per §5.7.
+- [ ] **Firebase project**: create in `asia-southeast1` and link via `firebase use --add`.
+- [ ] **`flutterfire configure`**: generates `lib/firebase_options.dart` and the platform config files (`google-services.json`, `GoogleService-Info.plist`). Required before adding `firebase_*` packages to the Flutter app.
+- [ ] **Production wiring follow-up PR**: add `firebase_core` / `firebase_auth` / `cloud_firestore` / `firebase_storage` deps, write the concrete `FirebaseAuthBootstrap` + `FirestoreUserRepository`, and replace `_PlaceholderHome` in `main.dart` with the real bootstrap.
+- [ ] **Deploy**: `firebase deploy --only firestore:rules,storage:rules,firestore:indexes,remoteconfig,functions`.
+- [ ] **Storage lifecycle rule**: configure the 30-day auto-delete on the `tags/` prefix in the GCS console (per §5.9; not expressible in `storage.rules`).
+- [ ] **MobileFaceNet asset**: pin a verified Apache-2.0 mirror in `tools/fetch_model.sh` (`MODEL_URL` + `MODEL_SHA256`) and drop the binary at `assets/models/mobilefacenet.tflite`.
+- [ ] **Latency gate**: run on a low-end Android (Pixel 4a / Galaxy A-series). On-device pipeline p95 must be <300ms. If it isn't, swap to the quantized embedder per §5.7.
 
 ## License
 

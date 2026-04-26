@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// Phase 0 rules cover onboarding selfies. Tag photo rules per §5.9 land in
+// PR #3 of Phase 2 (alongside submitTag). Default-deny for anything not
+// explicitly allowed here.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // selfies/{uid}.jpg: only the owner reads or writes their own selfie.
+    // ~30KB thumbnail per §3 Storage table. The deleteUserData Cloud Function
+    // uses the Admin SDK and bypasses these rules.
+    match /selfies/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
