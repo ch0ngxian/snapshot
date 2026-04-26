@@ -6,9 +6,10 @@ import '../models/user_profile.dart';
 import 'user_repository.dart';
 
 /// Production [UserRepository] backed by Firestore at `users/{uid}`. Schema
-/// matches tech-plan.md §3:
-///   displayName, faceEmbedding (base64 Float32), embeddingModelVersion,
-///   createdAt (Timestamp).
+/// matches tech-plan.md §3 and the validation in `firestore.rules`
+/// (`isValidUserProfile`):
+///   displayName (string), faceEmbedding (Firestore array of doubles, length
+///   192), embeddingModelVersion (string), createdAt (Timestamp).
 class FirestoreUserRepository implements UserRepository {
   static const String _collection = 'users';
 
@@ -25,13 +26,19 @@ class FirestoreUserRepository implements UserRepository {
     final snap = await _users.doc(uid).get();
     if (!snap.exists) return null;
     final data = snap.data()!;
-    return UserProfile(
-      uid: uid,
-      displayName: data['displayName'] as String,
-      faceEmbedding: _decodeEmbedding(data['faceEmbedding'] as List<dynamic>),
-      embeddingModelVersion: data['embeddingModelVersion'] as String,
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
-    );
+    try {
+      return UserProfile(
+        uid: uid,
+        displayName: data['displayName'] as String,
+        faceEmbedding: _decodeEmbedding(data['faceEmbedding'] as List<dynamic>),
+        embeddingModelVersion: data['embeddingModelVersion'] as String,
+        createdAt: (data['createdAt'] as Timestamp).toDate(),
+      );
+    } on TypeError catch (e) {
+      // Reachable if firestore.rules drift, an Admin-SDK write bypassed the
+      // schema check, or the doc was edited manually in the console.
+      throw StateError('users/$uid has unexpected schema: $e');
+    }
   }
 
   @override

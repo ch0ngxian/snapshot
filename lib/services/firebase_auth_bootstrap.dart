@@ -19,6 +19,12 @@ class FirebaseAuthBootstrap implements AuthBootstrap {
     final existing = _auth.currentUser;
     if (existing != null) return existing.uid;
     final credential = await _auth.signInAnonymously();
-    return credential.user!.uid;
+    final user = credential.user;
+    if (user == null) {
+      throw StateError(
+        'Firebase anonymous sign-in completed without returning a user.',
+      );
+    }
+    return user.uid;
   }
 }

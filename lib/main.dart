@@ -1,4 +1,5 @@
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'face/face_embedder.dart';
@@ -115,11 +116,34 @@ class _BootError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('Snapshot boot failed: $error');
     return Scaffold(
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Text('Could not start Snapshot: $error'),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "Couldn't start Snapshot.",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Check your connection and try again.',
+                textAlign: TextAlign.center,
+              ),
+              if (kDebugMode) ...[
+                const SizedBox(height: 16),
+                Text(
+                  '$error',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
