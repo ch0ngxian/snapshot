@@ -52,7 +52,7 @@ void main() {
       expect(completed!.uid, 'user-flow-1');
       expect(completed!.displayName, 'Alex');
       expect(completed!.embeddingModelVersion, 'fake-v1');
-      expect(completed!.faceEmbedding.length, 192);
+      expect(completed!.faceEmbedding.length, 128);
       expect(completed!.createdAt, DateTime.utc(2026, 4, 26));
 
       final stored = await users.get('user-flow-1');

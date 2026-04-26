@@ -27,7 +27,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(captured, isNotNull);
-      expect(captured!.embedding.length, 192);
+      expect(captured!.embedding.length, 128);
       expect(captured!.modelVersion, 'fake-v1');
       expect(captured!.jpegBytes, equals(fakeBytes));
     });

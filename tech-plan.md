@@ -94,7 +94,7 @@ Firestore (single project, single region — `asia-southeast1` / Singapore, pick
 
 | Path                                  | Purpose                                                                                    |
 |---------------------------------------|--------------------------------------------------------------------------------------------|
-| `users/{uid}`                         | `displayName`, `faceEmbedding` (base64 Float32, dim ~192), `embeddingModelVersion`, `selfieThumbUrl`, `createdAt` |
+| `users/{uid}`                         | `displayName`, `faceEmbedding` (Firestore array of doubles, dim 128), `embeddingModelVersion`, `selfieThumbUrl`, `createdAt` |
 | `lobbies/{lobbyId}`                   | `code` (6 char, unique while active), `hostUid`, `status` (`waiting`/`active`/`ended`), `rules` map, `createdAt`, `startedAt`, `endedAt` |
 | `lobbies/{lobbyId}/players/{uid}`     | `displayName`, `livesRemaining`, `lastTaggedAt`, `status` (`alive`/`eliminated`), `joinedAt`, `embeddingSnapshot` (denormalized at join time) |
 | `lobbies/{lobbyId}/tags/{tagId}`      | `taggerUid`, `resolvedTargetUid`, `topMatchDistance`, `top3Distances`, `accepted`, `rejectReason`, `photoStorageRef` (string — `null` while awaiting client upload of a borderline tag, `"discarded"` for clear-accept/reject tags, or `"tags/{lobbyId}/{tagId}.jpg"` once uploaded; §5.9), `modelVersion`, `createdAt` |
@@ -136,7 +136,7 @@ The opponent embeddings need to be loaded fast for every tag check. Reading them
 
 ### 5.1 Face recognition runs on-device, comparison runs server-side
 
-**What.** Embeddings are computed locally on the player's phone. The client uploads the embedding (a ~192-float vector) to a Cloud Function which performs cosine similarity against alive opponents in the same lobby and returns the verdict.
+**What.** Embeddings are computed locally on the player's phone. The client uploads the embedding (a 128-float vector) to a Cloud Function which performs cosine similarity against alive opponents in the same lobby and returns the verdict.
 
 **From first principles.** The face image is sensitive personal data; the round is real-time so latency matters; embeddings are small and cheap to ship. Doing the heavy ML on-device removes the photo from the network in the common case and keeps round responsiveness independent of backend ML capacity. The *verdict* must be server-authoritative, however, because anything client-decided is trivially cheatable.
 
@@ -214,7 +214,7 @@ The opponent embeddings need to be loaded fast for every tag check. Reading them
 
 ### 5.7 v1 face embedding model is MobileFaceNet (TFLite), locked
 
-**What.** Two-stage on-device pipeline: **(1) detect & crop** the largest face in the captured frame using ML Kit Face Detection (free, on-device, both platforms), **(2) embed** the cropped face using MobileFaceNet via TFLite. Bundle the same MobileFaceNet `.tflite` file in iOS and Android builds. Embedding dimension ~192. `modelVersion = "mobilefacenet-v1"` stamped on every embedding stored and every tag record. If quantization is needed for low-end Android perf, that ships as `mobilefacenet-v1-q` — a separate version, not a silent swap. If no face is detected in the captured frame, the client returns "no match" without calling `submitTag` — saves a Function invocation and gives the user faster feedback.
+**What.** Two-stage on-device pipeline: **(1) detect & crop** the largest face in the captured frame using ML Kit Face Detection (free, on-device, both platforms), **(2) embed** the cropped face using MobileFaceNet via TFLite. Bundle the same MobileFaceNet `.tflite` file in iOS and Android builds. Embedding dimension 128 (MobileFaceNet's native output — every reputable Apache-2.0 mirror of the model ships at 128). `modelVersion = "mobilefacenet-v1"` stamped on every embedding stored and every tag record. If quantization is needed for low-end Android perf, that ships as `mobilefacenet-v1-q` — a separate version, not a silent swap. If no face is detected in the captured frame, the client returns "no match" without calling `submitTag` — saves a Function invocation and gives the user faster feedback.
 
 **Why the detect-then-embed two-stage pipeline.** Feeding a full-frame photo to MobileFaceNet (where the face occupies maybe 10% of the image) produces embeddings dominated by background pixels and is empirically much less accurate than feeding a tight face crop. ML Kit Face Detection is the standard production pattern for this preprocessing step — fast (<50ms), no model file to bundle, and free. The detection model is separate from the embedding model so it doesn't muddy the `modelVersion` story.
 

@@ -17,7 +17,7 @@ service cloud.firestore {
         && data.displayName.size() > 0
         && data.displayName.size() <= 20
         && data.faceEmbedding is list
-        && data.faceEmbedding.size() == 192
+        && data.faceEmbedding.size() == 128
         && data.embeddingModelVersion is string
         && data.embeddingModelVersion.size() > 0
         && data.createdAt is timestamp;

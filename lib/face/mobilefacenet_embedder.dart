@@ -13,7 +13,7 @@ import 'no_face_detected_exception.dart';
 
 /// Production [FaceEmbedder]: ML Kit Face Detection picks the largest face,
 /// crops it (with a small margin), resizes to 112×112, and feeds it through a
-/// MobileFaceNet TFLite interpreter to produce a 192-dim L2-normalized
+/// MobileFaceNet TFLite interpreter to produce a 128-dim L2-normalized
 /// embedding.
 ///
 /// Construct via [create] — the default constructor is private so callers
@@ -21,7 +21,7 @@ import 'no_face_detected_exception.dart';
 class MobileFaceNetEmbedder implements FaceEmbedder {
   static const _modelAssetPath = 'assets/models/mobilefacenet.tflite';
   static const _inputSize = 112;
-  static const _embeddingDim = 192;
+  static const _embeddingDim = 128;
   static const _cropMarginRatio = 0.10;
 
   final Interpreter _interpreter;

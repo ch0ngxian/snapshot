@@ -17,7 +17,7 @@ The Dart pipeline in `lib/face/mobilefacenet_embedder.dart` expects:
 |--------------|------------------------------------------------------|
 | Input shape  | `1 × 112 × 112 × 3` (NHWC)                           |
 | Input dtype  | `float32`, normalized to `[-1, 1]` (`(p − 127.5) / 127.5`) |
-| Output shape | `1 × 192`                                            |
+| Output shape | `1 × 128`                                            |
 | Output dtype | `float32` (L2-normalized before cosine compare)      |
 
 Any drop-in replacement must match this contract or `mobilefacenet_embedder.dart`
