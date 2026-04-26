@@ -1,6 +1,44 @@
 # macOS
 .DS_Store
 
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+snapshot.iml
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+.metadata
+coverage/
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/flutter_export_environment.sh
+ios/Runner.xcworkspace/xcuserdata/
+ios/Runner.xcodeproj/xcuserdata/
+ios/Runner.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug
+android/app/profile
+android/app/release
+*.jks
+*.keystore
+
 # Firebase secrets / local config
 .firebaserc
 *-debug.log
@@ -10,31 +48,13 @@ ui-debug.log
 .runtimeconfig.json
 service-account*.json
 *.serviceaccount.json
+google-services.json
+GoogleService-Info.plist
 
 # Node (Cloud Functions)
+functions/node_modules/
+functions/lib/
 node_modules/
 npm-debug.log
 .env
 .env.local
-
-# Flutter / Dart — placeholder; full Flutter ignores added with the project scaffold in PR #1
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.pub-cache/
-.pub/
-build/
-ios/Pods/
-ios/Runner.xcworkspace/xcuserdata/
-android/.gradle/
-android/local.properties
-android/key.properties
-*.jks
-*.keystore
-
-# IDE
-.idea/
-.vscode/
-*.iml
-*.iws
