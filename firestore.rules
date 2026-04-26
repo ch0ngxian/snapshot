@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// Phase 0 rules cover the user profile only. Lobby + tag rules land in Phase 1
+// and Phase 2 respectively. Default-deny for anything not explicitly allowed
+// here.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidUserProfile(data) {
+      return data.keys().hasOnly([
+          'displayName',
+          'faceEmbedding',
+          'embeddingModelVersion',
+          'createdAt',
+        ])
+        && data.displayName is string
+        && data.displayName.size() > 0
+        && data.displayName.size() <= 20
+        && data.faceEmbedding is list
+        && data.faceEmbedding.size() == 192
+        && data.embeddingModelVersion is string
+        && data.embeddingModelVersion.size() > 0
+        && data.createdAt is timestamp;
+    }
+
+    // users/{uid}: a player's profile, including their face embedding.
+    // Only the owner reads or writes their own doc. The deleteUserData
+    // Cloud Function uses the Admin SDK and bypasses these rules.
+    //
+    // Schema mirrors lib/models/user_profile.dart — bump both together.
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null
+        && request.auth.uid == uid
+        && isValidUserProfile(request.resource.data);
+    }
+
+    // Default deny everything else until Phase 1 / Phase 2 lands.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
