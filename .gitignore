@@ -13,6 +13,14 @@ snapshot.iml
 .agents/
 skills-lock.json
 
+# Model build artifacts: the .tflite is fetched at setup time
+# (tools/fetch_model.sh), and tools/build_model.py runs in a venv that
+# downloads the upstream frozen graph for conversion. None of these
+# should be committed.
+tools/.venv-build/
+tools/.build-model/
+assets/models/*.tflite
+
 # Flutter / Dart
 .dart_tool/
 .flutter-plugins
