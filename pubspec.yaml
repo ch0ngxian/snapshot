@@ -18,6 +18,9 @@ dependencies:
   tflite_flutter: ^0.11.0                # MobileFaceNet inference
   image: ^4.1.0                          # crop / resize / decode
 
+  # Onboarding (per tech-plan.md §2)
+  image_picker: ^1.1.0                   # selfie capture via system camera
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -1,0 +1,18 @@
+{
+  "conditions": [],
+  "parameters": {
+    "tag_match_threshold": {
+      "defaultValue": { "value": "0.65" },
+      "description": "Cosine similarity threshold above which a tag is accepted (per tech-plan.md §5.8). Tune from playtest data; do not edit without checking BigQuery distance distributions.",
+      "valueType": "NUMBER"
+    },
+    "borderline_half_width": {
+      "defaultValue": { "value": "0.10" },
+      "description": "Half-width of the borderline band around tag_match_threshold within which the tag photo is retained for 30 days (per §5.9). Default 0.10 — widen during early playtest if data is sparse.",
+      "valueType": "NUMBER"
+    }
+  },
+  "version": {
+    "description": "Phase 0 baseline values per tech-plan.md §5.7–§5.9."
+  }
+}
