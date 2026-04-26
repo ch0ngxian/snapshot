@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import hashlib
 import sys
-import urllib.request
 from pathlib import Path
 
+import requests  # type: ignore[import-untyped]
 import tensorflow as tf  # type: ignore[import-untyped]
 
 # sirius-ai's pretrained frozen graph (raw GitHub URL).
@@ -56,7 +56,15 @@ def fetch_pb() -> Path:
         print(f"  cached: {pb_path} ({pb_path.stat().st_size / 1024:.1f} KB)")
         return pb_path
     print(f"  downloading {PB_URL}")
-    urllib.request.urlretrieve(PB_URL, pb_path)
+    # `requests` ships its own certifi cert bundle, which sidesteps the
+    # macOS-Python.framework "no system roots" problem that `urllib.request`
+    # hits out of the box.
+    resp = requests.get(PB_URL, stream=True, timeout=60)
+    resp.raise_for_status()
+    with pb_path.open("wb") as f:
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
     print(f"  saved {pb_path.stat().st_size / 1024:.1f} KB to {pb_path}")
     return pb_path
 
