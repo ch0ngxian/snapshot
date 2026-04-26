@@ -34,7 +34,7 @@ curl --fail --location --silent --show-error --output "$DEST" "$MODEL_URL"
 
 actual_sha=$(shasum -a 256 "$DEST" | awk '{print $1}')
 if [[ "$actual_sha" != "$MODEL_SHA256" ]]; then
-  echo "fetch_model.sh: checksum mismatch" >&2
+  echo "tools/fetch_model.sh: checksum mismatch" >&2
   echo "  expected: $MODEL_SHA256" >&2
   echo "  actual:   $actual_sha" >&2
   rm -f "$DEST"

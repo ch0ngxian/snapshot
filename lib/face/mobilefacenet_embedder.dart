@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show Rect;
 
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
@@ -25,6 +26,7 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
 
   final Interpreter _interpreter;
   final FaceDetector _detector;
+  bool _closed = false;
 
   @override
   final String modelVersion;
@@ -71,7 +73,10 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
       1,
       (_) => List<double>.filled(_embeddingDim, 0.0),
     );
-    _interpreter.run(input, output);
+    _interpreter.run(
+      input.reshape([1, _inputSize, _inputSize, 3]),
+      output,
+    );
 
     return _l2Normalize(Float32List.fromList(output[0]));
   }
@@ -99,15 +104,13 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
     }
   }
 
-  img.Image _cropAndResize(img.Image source, dynamic box) {
+  img.Image _cropAndResize(img.Image source, Rect box) {
     final marginX = (box.width * _cropMarginRatio).toInt();
     final marginY = (box.height * _cropMarginRatio).toInt();
     final left = (box.left.toInt() - marginX).clamp(0, source.width - 1);
     final top = (box.top.toInt() - marginY).clamp(0, source.height - 1);
-    final right =
-        (box.right.toInt() + marginX).clamp(left + 1, source.width).toInt();
-    final bottom =
-        (box.bottom.toInt() + marginY).clamp(top + 1, source.height).toInt();
+    final right = (box.right.toInt() + marginX).clamp(left + 1, source.width);
+    final bottom = (box.bottom.toInt() + marginY).clamp(top + 1, source.height);
     final cropped = img.copyCrop(
       source,
       x: left,
@@ -118,20 +121,15 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
     return img.copyResize(cropped, width: _inputSize, height: _inputSize);
   }
 
-  List<List<List<List<double>>>> _toNHWCFloat32(img.Image resized) {
-    final out = List.generate(
-      1,
-      (_) => List.generate(
-        _inputSize,
-        (_) => List.generate(_inputSize, (_) => List<double>.filled(3, 0.0)),
-      ),
-    );
+  Float32List _toNHWCFloat32(img.Image resized) {
+    final out = Float32List(_inputSize * _inputSize * 3);
+    var i = 0;
     for (var y = 0; y < _inputSize; y++) {
       for (var x = 0; x < _inputSize; x++) {
         final pixel = resized.getPixel(x, y);
-        out[0][y][x][0] = (pixel.r - 127.5) / 127.5;
-        out[0][y][x][1] = (pixel.g - 127.5) / 127.5;
-        out[0][y][x][2] = (pixel.b - 127.5) / 127.5;
+        out[i++] = (pixel.r - 127.5) / 127.5;
+        out[i++] = (pixel.g - 127.5) / 127.5;
+        out[i++] = (pixel.b - 127.5) / 127.5;
       }
     }
     return out;
@@ -153,6 +151,8 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
 
   @override
   Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
     _interpreter.close();
     await _detector.close();
   }

@@ -37,6 +37,14 @@ void main() {
       expect(sim.abs(), lessThan(0.999));
     });
 
+    test('all-zero bytes still produce a unit vector', () async {
+      const embedder = FakeFaceEmbedder();
+      final out = await embedder.embed(Uint8List.fromList([0, 0, 0, 0]));
+      expect(out.length, embedder.embeddingDim);
+      final selfSim = cosineSimilarity(out, out);
+      expect(selfSim, closeTo(1.0, 1e-5));
+    });
+
     test('rejects empty input', () async {
       const embedder = FakeFaceEmbedder();
       expect(

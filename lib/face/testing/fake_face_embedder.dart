@@ -36,6 +36,7 @@ class FakeFaceEmbedder implements FaceEmbedder {
     for (final b in imageBytes) {
       seed = (seed * 31 + b) & 0xFFFFFFFF;
     }
+    if (seed == 0) seed = 1;
 
     final out = Float32List(embeddingDim);
     for (var i = 0; i < embeddingDim; i++) {
@@ -47,10 +48,8 @@ class FakeFaceEmbedder implements FaceEmbedder {
       sumSq += x * x;
     }
     final norm = math.sqrt(sumSq);
-    if (norm > 0) {
-      for (var i = 0; i < out.length; i++) {
-        out[i] /= norm;
-      }
+    for (var i = 0; i < out.length; i++) {
+      out[i] /= norm;
     }
     return out;
   }
