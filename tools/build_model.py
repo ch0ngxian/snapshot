@@ -27,15 +27,20 @@ import hashlib
 import sys
 from pathlib import Path
 
+import numpy as np
 import requests  # type: ignore[import-untyped]
 import tensorflow as tf  # type: ignore[import-untyped]
 
-# sirius-ai's pretrained frozen graph (raw GitHub URL).
-# If this 404s, the repo may have moved the file — update PB_URL.
+# sirius-ai's pretrained frozen graph (raw GitHub URL) + checksum pin.
+# If the upstream file ever changes the checksum mismatch will halt the build
+# (supply-chain boundary — don't trust whatever GitHub serves on a given day).
+# To bump: update PB_URL, run once with PB_SHA256="" to print the new digest,
+# then paste it here.
 PB_URL = (
     "https://github.com/sirius-ai/MobileFaceNet_TF/raw/master/"
     "arch/pretrained_model/MobileFaceNet_9925_9680.pb"
 )
+PB_SHA256 = "fb046e5f723a70020962c6772a08c3c915a443ca19aaade732c2b84eea613f09"
 
 # Input/output tensor names in the frozen graph (sirius-ai convention).
 # Verify via Netron if conversion errors out on missing names.
@@ -43,28 +48,65 @@ INPUT_NAME = "img_inputs"
 OUTPUT_NAME = "embeddings"
 INPUT_SHAPE = (1, 112, 112, 3)
 EXPECTED_OUTPUT_SHAPE = (1, 128)
+EXPECTED_DTYPE = np.float32
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORK_DIR = REPO_ROOT / "tools" / ".build-model"
 ASSETS_DIR = REPO_ROOT / "assets" / "models"
 
 
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def fetch_pb() -> Path:
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     pb_path = WORK_DIR / "mobilefacenet.pb"
+    tmp_path = WORK_DIR / "mobilefacenet.pb.tmp"
+
     if pb_path.exists():
-        print(f"  cached: {pb_path} ({pb_path.stat().st_size / 1024:.1f} KB)")
-        return pb_path
+        cached_sha = _sha256(pb_path)
+        if cached_sha == PB_SHA256:
+            print(f"  cached: {pb_path} ({pb_path.stat().st_size / 1024:.1f} KB)")
+            return pb_path
+        print(f"  cached file has wrong sha256 ({cached_sha}), re-downloading")
+        pb_path.unlink()
+
     print(f"  downloading {PB_URL}")
-    # `requests` ships its own certifi cert bundle, which sidesteps the
-    # macOS-Python.framework "no system roots" problem that `urllib.request`
-    # hits out of the box.
-    resp = requests.get(PB_URL, stream=True, timeout=60)
-    resp.raise_for_status()
-    with pb_path.open("wb") as f:
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
+    # Two reasons we don't use `urllib.request.urlretrieve` here:
+    #   1. macOS Python.framework doesn't auto-trust system root certs;
+    #      `requests` ships its own certifi bundle.
+    #   2. We want atomic-on-success semantics — write to a .tmp path, verify
+    #      the checksum, then rename. A partial download (Ctrl-C, network
+    #      drop) leaves only the .tmp behind, which the next run re-fetches.
+    if tmp_path.exists():
+        tmp_path.unlink()
+    try:
+        resp = requests.get(PB_URL, stream=True, timeout=60)
+        resp.raise_for_status()
+        with tmp_path.open("wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                if chunk:
+                    f.write(chunk)
+        actual_sha = _sha256(tmp_path)
+        if PB_SHA256 and actual_sha != PB_SHA256:
+            raise RuntimeError(
+                f"upstream .pb checksum mismatch (supply-chain check): "
+                f"expected {PB_SHA256}, got {actual_sha}. "
+                f"Either the upstream repo updated the file or the download "
+                f"was corrupted. Verify the new digest before pinning."
+            )
+        if not PB_SHA256:
+            print(f"  (no PB_SHA256 pinned yet; observed digest: {actual_sha})")
+        tmp_path.replace(pb_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
     print(f"  saved {pb_path.stat().st_size / 1024:.1f} KB to {pb_path}")
     return pb_path
 
@@ -87,20 +129,41 @@ def convert_to_tflite(pb_path: Path, *, quantize: bool, out: Path) -> None:
 
 
 def verify(tflite_path: Path) -> None:
+    # `assert` is wrong here — `python -O` strips them. These are contract
+    # checks at a build-time supply-chain boundary, so they must always run.
     interp = tf.lite.Interpreter(model_path=str(tflite_path))
     interp.allocate_tensors()
     inp = interp.get_input_details()[0]
     out = interp.get_output_details()[0]
-    print(f"  input:  shape={tuple(inp['shape'])} dtype={inp['dtype'].__name__}")
-    print(f"  output: shape={tuple(out['shape'])} dtype={out['dtype'].__name__}")
-    assert tuple(inp["shape"]) == INPUT_SHAPE, (
-        f"input shape mismatch: got {tuple(inp['shape'])}, expected {INPUT_SHAPE}"
-    )
-    assert tuple(out["shape"]) == EXPECTED_OUTPUT_SHAPE, (
-        f"output shape mismatch: got {tuple(out['shape'])}, "
-        f"expected {EXPECTED_OUTPUT_SHAPE}"
-    )
-    digest = hashlib.sha256(tflite_path.read_bytes()).hexdigest()
+    in_shape = tuple(inp["shape"])
+    out_shape = tuple(out["shape"])
+    in_dtype = inp["dtype"]
+    out_dtype = out["dtype"]
+    print(f"  input:  shape={in_shape} dtype={in_dtype.__name__}")
+    print(f"  output: shape={out_shape} dtype={out_dtype.__name__}")
+
+    if in_shape != INPUT_SHAPE:
+        raise ValueError(
+            f"input shape mismatch: got {in_shape}, expected {INPUT_SHAPE}"
+        )
+    if out_shape != EXPECTED_OUTPUT_SHAPE:
+        raise ValueError(
+            f"output shape mismatch: got {out_shape}, "
+            f"expected {EXPECTED_OUTPUT_SHAPE}"
+        )
+    # Dynamic-range quantization keeps I/O float32 (only weights go int8).
+    # Full int8 quantization would change these dtypes — guard against
+    # accidentally producing a model the Dart pipeline can't feed.
+    if in_dtype != EXPECTED_DTYPE:
+        raise ValueError(
+            f"input dtype mismatch: got {in_dtype}, expected {EXPECTED_DTYPE}"
+        )
+    if out_dtype != EXPECTED_DTYPE:
+        raise ValueError(
+            f"output dtype mismatch: got {out_dtype}, expected {EXPECTED_DTYPE}"
+        )
+
+    digest = _sha256(tflite_path)
     print(f"  sha256: {digest}")
 
 
