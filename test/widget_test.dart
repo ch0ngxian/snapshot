@@ -1,12 +1,29 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/main.dart';
+import 'package:snapshot/services/testing/fake_auth_bootstrap.dart';
+import 'package:snapshot/services/testing/in_memory_user_repository.dart';
 
 void main() {
-  testWidgets('placeholder home renders the demo button',
-      (WidgetTester tester) async {
-    await tester.pumpWidget(const SnapshotApp());
+  testWidgets(
+    'SnapshotApp routes a new user into onboarding',
+    (tester) async {
+      await tester.pumpWidget(
+        SnapshotApp(
+          auth: FakeAuthBootstrap(),
+          users: InMemoryUserRepository(),
+          embedder: const FakeFaceEmbedder(),
+        ),
+      );
 
-    expect(find.text('Snapshot — Phase 0'), findsOneWidget);
-    expect(find.text('Try onboarding (demo mode)'), findsOneWidget);
-  });
+      // First frame is the boot splash — the FutureBuilder is still resolving.
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      await tester.pumpAndSettle();
+
+      // No profile in the repo, so we land on the first onboarding screen.
+      expect(find.text('Your name'), findsOneWidget);
+    },
+  );
 }

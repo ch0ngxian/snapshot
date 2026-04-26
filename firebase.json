@@ -1,5 +1,7 @@
 {
   "firestore": {
+    "database": "(default)",
+    "location": "asia-southeast1",
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
@@ -16,6 +18,37 @@
   ],
   "remoteconfig": {
     "template": "remoteconfig.template.json"
+  },
+  "auth": {
+    "providers": {}
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "cx-snapshot",
+          "appId": "1:1097327655431:android:c62d46b7f65bb996c908a2",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "cx-snapshot",
+          "appId": "1:1097327655431:ios:4bec936b9cc8b702c908a2",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "cx-snapshot",
+          "configurations": {
+            "android": "1:1097327655431:android:c62d46b7f65bb996c908a2",
+            "ios": "1:1097327655431:ios:4bec936b9cc8b702c908a2"
+          }
+        }
+      }
+    }
   },
   "emulators": {
     "auth": { "port": 9099 },
