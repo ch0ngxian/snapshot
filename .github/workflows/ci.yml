@@ -32,5 +32,37 @@ jobs:
       - name: Test
         run: flutter test
 
+      # The com.google.gms.google-services Gradle plugin fails the build if
+      # google-services.json is missing. Real Firebase config is gitignored
+      # (each developer regenerates via `flutterfire configure`), so write a
+      # stub here whose only job is to satisfy the plugin's structural check
+      # at build time. package_name must match android/app/build.gradle.kts
+      # `applicationId`.
+      - name: Stub google-services.json for Gradle plugin
+        run: |
+          cat > android/app/google-services.json <<'EOF'
+          {
+            "project_info": {
+              "project_number": "0",
+              "project_id": "stub",
+              "storage_bucket": "stub.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:0:android:0",
+                  "android_client_info": {
+                    "package_name": "com.snapshot.snapshot"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [{ "current_key": "ci-stub" }],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+
       - name: Build debug APK
         run: flutter build apk --debug

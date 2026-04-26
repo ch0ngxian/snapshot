@@ -1,17 +1,69 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'face/face_embedder.dart';
 import 'face/testing/fake_face_embedder.dart';
+import 'firebase_options.dart';
 import 'models/user_profile.dart';
 import 'onboarding/onboarding_flow.dart';
-import 'services/testing/fake_auth_bootstrap.dart';
-import 'services/testing/in_memory_user_repository.dart';
+import 'services/auth_bootstrap.dart';
+import 'services/firebase_auth_bootstrap.dart';
+import 'services/firestore_user_repository.dart';
+import 'services/user_repository.dart';
 
-void main() {
-  runApp(const SnapshotApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // TODO(phase-0-followup): swap to MobileFaceNetEmbedder.create() once the
+  // .tflite asset is sourced (see tools/fetch_model.sh + assets/models/NOTICE.md).
+  // FakeFaceEmbedder produces deterministic 192-dim vectors so onboarding
+  // wiring and Firestore writes can be exercised end-to-end in the meantime.
+  const FaceEmbedder embedder = FakeFaceEmbedder();
+
+  runApp(SnapshotApp(
+    auth: FirebaseAuthBootstrap(),
+    users: FirestoreUserRepository(),
+    embedder: embedder,
+  ));
 }
 
-class SnapshotApp extends StatelessWidget {
-  const SnapshotApp({super.key});
+class SnapshotApp extends StatefulWidget {
+  final AuthBootstrap auth;
+  final UserRepository users;
+  final FaceEmbedder embedder;
+
+  const SnapshotApp({
+    super.key,
+    required this.auth,
+    required this.users,
+    required this.embedder,
+  });
+
+  @override
+  State<SnapshotApp> createState() => _SnapshotAppState();
+}
+
+class _SnapshotAppState extends State<SnapshotApp> {
+  late Future<UserProfile?> _bootFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootFuture = _boot();
+  }
+
+  Future<UserProfile?> _boot() async {
+    final uid = await widget.auth.signInAnonymously();
+    return widget.users.get(uid);
+  }
+
+  void _onOnboardingComplete(UserProfile profile) {
+    setState(() => _bootFuture = Future.value(profile));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -22,75 +74,109 @@ class SnapshotApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const _PlaceholderHome(),
+      home: FutureBuilder<UserProfile?>(
+        future: _bootFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const _BootSplash();
+          }
+          if (snapshot.hasError) {
+            return _BootError(error: snapshot.error!);
+          }
+          final profile = snapshot.data;
+          if (profile == null) {
+            return OnboardingFlow(
+              auth: widget.auth,
+              users: widget.users,
+              embedder: widget.embedder,
+              onComplete: _onOnboardingComplete,
+            );
+          }
+          return _Home(profile: profile);
+        },
+      ),
     );
   }
 }
 
-/// Phase 0 placeholder. Production wiring (Firebase + MobileFaceNetEmbedder)
-/// lands in a follow-up PR after `flutterfire configure` is run and the model
-/// asset is sourced. For now, tapping the demo button runs the onboarding
-/// flow with in-memory fakes so the screens can be hand-tested on a device.
-class _PlaceholderHome extends StatefulWidget {
-  const _PlaceholderHome();
+class _BootSplash extends StatelessWidget {
+  const _BootSplash();
 
   @override
-  State<_PlaceholderHome> createState() => _PlaceholderHomeState();
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(child: CircularProgressIndicator()),
+    );
+  }
 }
 
-class _PlaceholderHomeState extends State<_PlaceholderHome> {
-  UserProfile? _completed;
+class _BootError extends StatelessWidget {
+  final Object error;
+  const _BootError({required this.error});
 
-  void _runDemo() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => OnboardingFlow(
-          auth: FakeAuthBootstrap(),
-          users: InMemoryUserRepository(),
-          embedder: const FakeFaceEmbedder(),
-          onComplete: (profile) {
-            setState(() => _completed = profile);
-            Navigator.of(context).pop();
-          },
+  @override
+  Widget build(BuildContext context) {
+    debugPrint('Snapshot boot failed: $error');
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "Couldn't start Snapshot.",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Check your connection and try again.',
+                textAlign: TextAlign.center,
+              ),
+              if (kDebugMode) ...[
+                const SizedBox(height: 16),
+                Text(
+                  '$error',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+/// Phase 0 placeholder home. Lobby UI lands in Phase 1.
+class _Home extends StatelessWidget {
+  final UserProfile profile;
+  const _Home({required this.profile});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Snapshot — Phase 0')),
+      appBar: AppBar(title: Text('Hi, ${profile.displayName}')),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Phase 0 scaffold. Production wiring needs:',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              'You are onboarded.',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             ),
             const SizedBox(height: 8),
-            const Text("• `flutterfire configure` to generate firebase_options.dart"),
-            const Text('• `tools/fetch_model.sh` (or manual drop) for the MobileFaceNet TFLite asset'),
-            const Text('• `firebase deploy` for rules + functions + Remote Config'),
+            Text('uid: ${profile.uid}'),
+            Text('embedding model: ${profile.embeddingModelVersion}'),
+            Text('embedding dim: ${profile.faceEmbedding.length}'),
             const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _runDemo,
-              child: const Text('Try onboarding (demo mode)'),
+            const Text(
+              'Lobby UI lands in Phase 1.',
+              style: TextStyle(fontStyle: FontStyle.italic),
             ),
-            if (_completed != null) ...[
-              const SizedBox(height: 24),
-              const Text(
-                'Last demo run:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              Text('uid: ${_completed!.uid}'),
-              Text('name: ${_completed!.displayName}'),
-              Text('embedding dim: ${_completed!.faceEmbedding.length}'),
-              Text('model: ${_completed!.embeddingModelVersion}'),
-              Text('createdAt: ${_completed!.createdAt.toIso8601String()}'),
-            ],
           ],
         ),
       ),

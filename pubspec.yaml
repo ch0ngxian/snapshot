@@ -13,6 +13,12 @@ dependencies:
 
   cupertino_icons: ^1.0.8
 
+  # Firebase (per tech-plan.md §5.4 — region asia-southeast1)
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.0          # anonymous auth (§2 onboarding)
+  cloud_firestore: ^5.4.0        # users/{uid} profile + future lobby state
+  firebase_storage: ^12.3.0      # selfie thumbs + borderline tag photos (§5.9)
+
   # Face pipeline (per tech-plan.md §5.7)
   google_mlkit_face_detection: ^0.13.0  # detect & crop largest face
   tflite_flutter: ^0.11.0                # MobileFaceNet inference
