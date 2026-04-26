@@ -51,6 +51,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   _Step _step = _Step.name;
   String? _name;
   SelfieResult? _selfie;
+  bool _finishing = false;
 
   @override
   Widget build(BuildContext context) {
@@ -81,12 +82,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   Future<void> _finish() async {
+    if (_finishing) return;
     final name = _name;
     final selfie = _selfie;
     if (name == null || selfie == null) {
       // Defensive — UI doesn't allow reaching consent without prior steps.
       return;
     }
+    _finishing = true;
     final uid = await widget.auth.signInAnonymously();
     final profile = UserProfile(
       uid: uid,

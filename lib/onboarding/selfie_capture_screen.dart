@@ -59,6 +59,8 @@ class _SelfieCaptureScreenState extends State<SelfieCaptureScreen> {
         return;
       }
       final embedding = await widget.embedder.embed(bytes);
+      if (!mounted) return;
+      setState(() => _processing = false);
       widget.onCaptured(
         SelfieResult(
           jpegBytes: bytes,
