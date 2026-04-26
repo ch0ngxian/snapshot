@@ -1,5 +1,8 @@
-# Uncomment this line to define a global platform for your project
-# platform :ios, '13.0'
+# google_mlkit_commons (pulled in by google_mlkit_face_detection) requires
+# iOS 15.5+. Without setting a platform here, CocoaPods auto-defaults to
+# iOS 13.0 and `pod install` fails with "Specs satisfying the dependency
+# were found, but they required a higher minimum deployment target."
+platform :ios, '15.5'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -39,5 +42,11 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    # Pin every pod target to the same deployment target as Runner, so a
+    # transitive dependency that defaults lower doesn't silently downgrade
+    # the build (or noisily warn at link time).
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.5'
+    end
   end
 end
