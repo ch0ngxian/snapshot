@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'face/face_embedder.dart';
-import 'face/testing/fake_face_embedder.dart';
+import 'face/mobilefacenet_embedder.dart';
 import 'firebase_options.dart';
 import 'models/user_profile.dart';
 import 'onboarding/onboarding_flow.dart';
@@ -18,11 +18,13 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // TODO(phase-0-followup): swap to MobileFaceNetEmbedder.create() once the
-  // .tflite asset is sourced (see tools/fetch_model.sh + assets/models/NOTICE.md).
-  // FakeFaceEmbedder produces deterministic 128-dim vectors so onboarding
-  // wiring and Firestore writes can be exercised end-to-end in the meantime.
-  const FaceEmbedder embedder = FakeFaceEmbedder();
+  // Production face embedder. Defaults to mobilefacenet-v1 (float32) per
+  // tech-plan §314 — switch to mobilefacenet-v1-q (int8 dynamic-range) only
+  // if the latency gate flags p95 > 300 ms on a low-end Android, and bump
+  // the modelVersion stamp at the same time so the wire format isn't a
+  // silent swap. The .tflite is gitignored; tools/fetch_model.sh fetches
+  // it before `flutter run`.
+  final FaceEmbedder embedder = await MobileFaceNetEmbedder.create();
 
   runApp(SnapshotApp(
     auth: FirebaseAuthBootstrap(),
