@@ -7,3 +7,4 @@ admin.initializeApp();
 setGlobalOptions({ region: "asia-southeast1", maxInstances: 10 });
 
 export { deleteUserData } from "./deleteUserData";
+export { createLobby } from "./createLobby";
