@@ -26,10 +26,21 @@ class WaitingRoomScreen extends StatelessWidget {
     return StreamBuilder<Lobby?>(
       stream: repo.watchLobby(lobbyId),
       builder: (context, snap) {
-        final lobby = snap.data;
-        if (lobby == null) {
+        if (snap.hasError) {
+          return _LobbyUnavailable(
+            message: 'Unable to load this lobby right now.',
+            error: snap.error,
+          );
+        }
+        if (snap.connectionState == ConnectionState.waiting) {
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        final lobby = snap.data;
+        if (lobby == null) {
+          return const _LobbyUnavailable(
+            message: "This lobby no longer exists or couldn't be found.",
           );
         }
         final isHost = lobby.hostUid == currentUid;
@@ -96,6 +107,41 @@ class WaitingRoomScreen extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _LobbyUnavailable extends StatelessWidget {
+  final String message;
+  final Object? error;
+  const _LobbyUnavailable({required this.message, this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Lobby unavailable')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, textAlign: TextAlign.center),
+              if (error != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  '$error',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

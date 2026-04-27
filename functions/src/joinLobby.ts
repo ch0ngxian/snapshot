@@ -29,6 +29,7 @@ const MAX_PLAYERS = 20;
  * proper transaction is tracked under Phase 3 hardening (§336).
  */
 export const joinLobby = onCall(
+  { region: "asia-southeast1" },
   async (request: CallableRequest<JoinLobbyRequest>): Promise<JoinLobbyResult> => {
     const rawCode = (request.data?.code ?? "").trim().toUpperCase();
     if (!CODE_PATTERN.test(rawCode)) {

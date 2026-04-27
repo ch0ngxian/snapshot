@@ -24,6 +24,11 @@ const MAX_CODE_RETRIES = 5;
  * status. Also writes the host as the first player.
  */
 export const createLobby = onCall(
+  // Explicit region in addition to the global default in index.ts. The
+  // Flutter client hard-codes `asia-southeast1`; pinning per-function
+  // removes any risk of a region split-brain if module-load ordering of
+  // setGlobalOptions changes.
+  { region: "asia-southeast1" },
   async (request: CallableRequest<unknown>): Promise<CreateLobbyResult> => {
     const db = admin.firestore();
     const { uid: hostUid, user } = await requireOnboardedCaller(request, db);

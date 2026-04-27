@@ -8,7 +8,7 @@ import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
 
 Future<void> _pump(
   WidgetTester tester, {
-  required InMemoryLobbyRepository repo,
+  required LobbyRepository repo,
   required ValueChanged<String> onJoined,
   Stream<String>? scanStreamOverride,
 }) async {
@@ -68,7 +68,7 @@ void main() {
 
       await _pump(
         tester,
-        repo: InMemoryLobbyRepository(currentUid: 'u1'),
+        repo: repo,
         onJoined: (_) {},
       );
 

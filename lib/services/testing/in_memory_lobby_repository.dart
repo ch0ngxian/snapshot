@@ -124,8 +124,10 @@ class InMemoryLobbyRepository implements LobbyRepository {
     return controller.stream;
   }
 
+  static const int _maxCodeAttempts = 10;
+
   String _allocateCode() {
-    while (true) {
+    for (var i = 0; i < _maxCodeAttempts; i++) {
       final candidate = String.fromCharCodes(
         List.generate(_codeLength, (_) => _alphabet.codeUnitAt(_rng.nextInt(_alphabet.length))),
       );
@@ -134,6 +136,10 @@ class InMemoryLobbyRepository implements LobbyRepository {
       );
       if (!taken) return candidate;
     }
+    throw StateError(
+      'InMemoryLobbyRepository._allocateCode: exhausted '
+      '$_maxCodeAttempts attempts (test injecting a colliding Random?)',
+    );
   }
 
   LobbyPlayer _playerFor(String uid, _Profile profile) => LobbyPlayer(
