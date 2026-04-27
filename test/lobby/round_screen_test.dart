@@ -3,6 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:snapshot/lobby/round_results_screen.dart';
 import 'package:snapshot/lobby/round_screen.dart';
 import 'package:snapshot/models/lobby.dart';
+import 'package:snapshot/models/lobby_player.dart';
+import 'package:snapshot/services/lobby_repository.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
 
 Future<({InMemoryLobbyRepository repo, String lobbyId})> _activeLobby() async {
@@ -77,4 +79,126 @@ void main() {
     expect(find.byType(RoundResultsScreen), findsOneWidget);
     addTearDown(ctx.repo.dispose);
   });
+
+  testWidgets('shows unavailable when watchLobby errors', (tester) async {
+    final repo = _ErroringRepo();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: repo,
+          lobbyId: 'lobby-x',
+          currentUid: 'host-1',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Round unavailable'), findsOneWidget);
+    expect(repo.endRoundCalls, isEmpty);
+  });
+
+  testWidgets('shows unavailable when the lobby disappears mid-round',
+      (tester) async {
+    final repo = _DeletingRepo();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: repo,
+          lobbyId: 'lobby-x',
+          currentUid: 'host-1',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    expect(find.text('Round unavailable'), findsOneWidget);
+    expect(repo.endRoundCalls, isEmpty);
+  });
+
+  testWidgets("doesn't end the round when startedAt hasn't propagated",
+      (tester) async {
+    // Round whose timer can't be evaluated yet — startedAt is null. The
+    // ticker should leave it alone instead of looping endRound calls.
+    final repo = _ActiveButNoStartedAtRepo();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: repo,
+          lobbyId: 'lobby-x',
+          currentUid: 'host-1',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(repo.endRoundCalls, isEmpty);
+  });
+}
+
+class _ErroringRepo implements LobbyRepository {
+  final List<String> endRoundCalls = [];
+  @override
+  Future<CreatedLobby> createLobby() async => throw UnimplementedError();
+  @override
+  Future<String> joinLobby(String code) async => throw UnimplementedError();
+  @override
+  Future<void> startRound(String id, LobbyRules r) async =>
+      throw UnimplementedError();
+  @override
+  Future<void> endRound(String id) async => endRoundCalls.add(id);
+  @override
+  Stream<Lobby?> watchLobby(String lobbyId) =>
+      Stream<Lobby?>.error(StateError('boom'));
+  @override
+  Stream<List<LobbyPlayer>> watchPlayers(String lobbyId) => const Stream.empty();
+}
+
+class _DeletingRepo implements LobbyRepository {
+  final List<String> endRoundCalls = [];
+  @override
+  Future<CreatedLobby> createLobby() async => throw UnimplementedError();
+  @override
+  Future<String> joinLobby(String code) async => throw UnimplementedError();
+  @override
+  Future<void> startRound(String id, LobbyRules r) async =>
+      throw UnimplementedError();
+  @override
+  Future<void> endRound(String id) async => endRoundCalls.add(id);
+  @override
+  Stream<Lobby?> watchLobby(String lobbyId) =>
+      Stream<Lobby?>.value(null);
+  @override
+  Stream<List<LobbyPlayer>> watchPlayers(String lobbyId) => const Stream.empty();
+}
+
+class _ActiveButNoStartedAtRepo implements LobbyRepository {
+  final List<String> endRoundCalls = [];
+  @override
+  Future<CreatedLobby> createLobby() async => throw UnimplementedError();
+  @override
+  Future<String> joinLobby(String code) async => throw UnimplementedError();
+  @override
+  Future<void> startRound(String id, LobbyRules r) async =>
+      throw UnimplementedError();
+  @override
+  Future<void> endRound(String id) async => endRoundCalls.add(id);
+  @override
+  Stream<Lobby?> watchLobby(String lobbyId) => Stream<Lobby?>.value(
+        Lobby(
+          lobbyId: lobbyId,
+          code: 'ABC123',
+          hostUid: 'host-1',
+          status: LobbyStatus.active,
+          rules: LobbyRules.defaults,
+          createdAt: DateTime.now(),
+          // startedAt deliberately null — server transaction in flight.
+        ),
+      );
+  @override
+  Stream<List<LobbyPlayer>> watchPlayers(String lobbyId) => const Stream.empty();
 }

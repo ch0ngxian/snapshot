@@ -58,9 +58,9 @@ class _RoundScreenState extends State<RoundScreen> {
     if (lobby != null) _maybeEnd(lobby);
   }
 
-  Duration _remaining(Lobby lobby) {
+  Duration? _remaining(Lobby lobby) {
     final startedAt = lobby.startedAt;
-    if (startedAt == null) return Duration.zero;
+    if (startedAt == null) return null;
     final endsAt = startedAt.add(Duration(seconds: lobby.rules.durationSeconds));
     final delta = endsAt.difference(widget.clock());
     return delta.isNegative ? Duration.zero : delta;
@@ -69,7 +69,12 @@ class _RoundScreenState extends State<RoundScreen> {
   Future<void> _maybeEnd(Lobby lobby) async {
     if (_endRequested) return;
     if (lobby.status != LobbyStatus.active) return;
-    if (_remaining(lobby) > Duration.zero) return;
+    final remaining = _remaining(lobby);
+    // Don't try to end if `startedAt` hasn't propagated yet — the round
+    // hasn't actually begun from the server's POV, so calling endRound
+    // would just trip the active→ended precondition check.
+    if (remaining == null) return;
+    if (remaining > Duration.zero) return;
     _endRequested = true;
     try {
       await widget.repo.endRound(widget.lobbyId);
@@ -100,17 +105,38 @@ class _RoundScreenState extends State<RoundScreen> {
     return StreamBuilder<Lobby?>(
       stream: widget.repo.watchLobby(widget.lobbyId),
       builder: (context, lobbySnap) {
+        if (lobbySnap.hasError) {
+          // The stream blew up — stop the ticker so we don't keep firing
+          // _maybeEnd against a stale _lobby and looping endRound calls.
+          _ticker?.cancel();
+          return _RoundUnavailable(
+            message: 'Lost connection to the round.',
+            error: lobbySnap.error,
+          );
+        }
+        if (lobbySnap.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
         final lobby = lobbySnap.data;
-        if (lobby != null) {
-          _lobby = lobby;
-          if (lobby.status == LobbyStatus.ended) {
-            WidgetsBinding.instance.addPostFrameCallback((_) => _routeToResults());
-          } else {
-            // Drive expiry detection off lobby updates too (not just the
-            // 1Hz ticker) so a state change like the host bumping duration
-            // — Phase 2+ if it's ever added — re-evaluates immediately.
-            _maybeEnd(lobby);
-          }
+        if (lobby == null) {
+          // Lobby doc was deleted out from under us. Same protection as
+          // the error branch — drop the ticker and surface a terminal UI.
+          _ticker?.cancel();
+          _lobby = null;
+          return const _RoundUnavailable(
+            message: 'This round is no longer available.',
+          );
+        }
+        _lobby = lobby;
+        if (lobby.status == LobbyStatus.ended) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _routeToResults());
+        } else {
+          // Drive expiry detection off lobby updates too (not just the
+          // 1Hz ticker) so a state change like the host bumping duration
+          // — Phase 2+ if it's ever added — re-evaluates immediately.
+          _maybeEnd(lobby);
         }
         return Scaffold(
           appBar: AppBar(
@@ -122,7 +148,7 @@ class _RoundScreenState extends State<RoundScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _Countdown(remaining: lobby == null ? null : _remaining(lobby)),
+                _Countdown(remaining: _remaining(lobby)),
                 const SizedBox(height: 24),
                 _AliveCount(repo: widget.repo, lobbyId: widget.lobbyId),
                 const Spacer(),
@@ -180,6 +206,49 @@ class _AliveCount extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _RoundUnavailable extends StatelessWidget {
+  final String message;
+  final Object? error;
+  const _RoundUnavailable({required this.message, this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Round unavailable'),
+        automaticallyImplyLeading: false,
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, textAlign: TextAlign.center),
+              if (error != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  '$error',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 24),
+              FilledButton(
+                onPressed: () => Navigator.of(context).popUntil((r) => r.isFirst),
+                child: const Text('Back to home'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

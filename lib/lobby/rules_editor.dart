@@ -39,7 +39,6 @@ class RulesEditor extends StatelessWidget {
         const SizedBox(height: 8),
         _StepperRow(
           label: 'Lives',
-          value: value.startingLives,
           display: '${value.startingLives}',
           onDec: enabled && value.startingLives > minLives
               ? () => onChanged(_copy(startingLives: value.startingLives - 1))
@@ -50,7 +49,6 @@ class RulesEditor extends StatelessWidget {
         ),
         _StepperRow(
           label: 'Duration',
-          value: value.durationSeconds,
           display: '${value.durationSeconds ~/ 60} min',
           onDec: enabled && value.durationSeconds > minDurationSeconds
               ? () => onChanged(
@@ -65,7 +63,6 @@ class RulesEditor extends StatelessWidget {
         ),
         _StepperRow(
           label: 'Immunity',
-          value: value.immunitySeconds,
           display: '${value.immunitySeconds}s',
           onDec: enabled && value.immunitySeconds > minImmunitySeconds
               ? () => onChanged(
@@ -103,14 +100,12 @@ class RulesEditor extends StatelessWidget {
 
 class _StepperRow extends StatelessWidget {
   final String label;
-  final int value;
   final String display;
   final VoidCallback? onDec;
   final VoidCallback? onInc;
 
   const _StepperRow({
     required this.label,
-    required this.value,
     required this.display,
     required this.onDec,
     required this.onInc,
