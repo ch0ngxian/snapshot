@@ -1,10 +1,19 @@
 rules_version = '2';
 
-// Phase 0 rules cover the user profile only. Lobby + tag rules land in Phase 1
-// and Phase 2 respectively. Default-deny for anything not explicitly allowed
-// here.
+// Phase 0 rules cover the user profile. Phase 1 adds read access to lobby
+// docs + the players subcollection for anyone who has joined the lobby.
+// All lobby/player writes go through Cloud Functions (createLobby,
+// joinLobby, startRound, submitTag) using the Admin SDK, which bypasses
+// these rules. Tag rules land in Phase 2. Default-deny for anything not
+// explicitly allowed here.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isPlayerOf(lobbyId) {
+      return request.auth != null && exists(
+        /databases/$(database)/documents/lobbies/$(lobbyId)/players/$(request.auth.uid)
+      );
+    }
 
     function isValidUserProfile(data) {
       return data.keys().hasOnly([
@@ -35,7 +44,34 @@ service cloud.firestore {
         && isValidUserProfile(request.resource.data);
     }
 
-    // Default deny everything else until Phase 1 / Phase 2 lands.
+    // lobbies/{lobbyId}: the round-level state doc. Readable by anyone who
+    // already has a player record in the lobby — the client subscribes to
+    // this for the waiting-room screen and (Phase 2+) live round status.
+    // All writes are server-side via the Admin SDK.
+    match /lobbies/{lobbyId} {
+      allow read: if isPlayerOf(lobbyId);
+      allow write: if false;
+
+      // lobbies/{lobbyId}/players/{uid}: per-player state. Same read rule —
+      // a player can see the rest of the room (and themselves). The host's
+      // creation and joiners' writes both happen through the corresponding
+      // Cloud Function, so no client write path is needed here either.
+      match /players/{uid} {
+        allow read: if isPlayerOf(lobbyId);
+        allow write: if false;
+      }
+
+      // lobbies/{lobbyId}/tags/{tagId}: tag records. Read access mirrors the
+      // rest of the lobby — players see each other's tag history (used by
+      // the scoreboard / end-of-round summary in Phase 2). Writes are
+      // server-only via submitTag (Phase 2).
+      match /tags/{tagId} {
+        allow read: if isPlayerOf(lobbyId);
+        allow write: if false;
+      }
+    }
+
+    // Default deny everything else until Phase 2 lands.
     match /{document=**} {
       allow read, write: if false;
     }
