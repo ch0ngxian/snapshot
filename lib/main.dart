@@ -15,10 +15,14 @@ import 'lobby/lobby_entry_screen.dart';
 import 'models/user_profile.dart';
 import 'onboarding/onboarding_flow.dart';
 import 'services/auth_bootstrap.dart';
+import 'services/fcm_registrar.dart';
 import 'services/firebase_auth_bootstrap.dart';
 import 'services/firestore_lobby_repository.dart';
+import 'services/firestore_tag_repository.dart';
 import 'services/firestore_user_repository.dart';
 import 'services/lobby_repository.dart';
+import 'services/tag_push_listener.dart';
+import 'services/tag_repository.dart';
 import 'services/user_repository.dart';
 
 Future<void> main() async {
@@ -35,11 +39,15 @@ Future<void> main() async {
     // fetches it before `flutter run`.
     final FaceEmbedder embedder = await MobileFaceNetEmbedder.create();
 
+    final users = FirestoreUserRepository();
     runApp(SnapshotApp(
       auth: FirebaseAuthBootstrap(),
-      users: FirestoreUserRepository(),
+      users: users,
       lobbies: FirestoreLobbyRepository(),
+      tags: FirestoreTagRepository(),
+      fcm: FcmRegistrar(users: users),
       embedder: embedder,
+      buildTagPushListener: (key) => TagPushListener(messengerKey: key),
     ));
   } catch (err, stack) {
     // Anything before runApp throws into a no-UI void — wrap it so the
@@ -62,14 +70,23 @@ class SnapshotApp extends StatefulWidget {
   final AuthBootstrap auth;
   final UserRepository users;
   final LobbyRepository lobbies;
+  final TagRepository tags;
+  final FcmRegistrar fcm;
   final FaceEmbedder embedder;
+  // Factory rather than a finished instance — the listener needs the
+  // ScaffoldMessenger key, which is owned by `_SnapshotAppState`.
+  final TagPushListener Function(GlobalKey<ScaffoldMessengerState>)
+      buildTagPushListener;
 
   const SnapshotApp({
     super.key,
     required this.auth,
     required this.users,
     required this.lobbies,
+    required this.tags,
+    required this.fcm,
     required this.embedder,
+    required this.buildTagPushListener,
   });
 
   @override
@@ -78,11 +95,21 @@ class SnapshotApp extends StatefulWidget {
 
 class _SnapshotAppState extends State<SnapshotApp> {
   late Future<UserProfile?> _bootFuture;
+  // Hoisted so the FCM listener can surface in-app banners (tech-plan §78)
+  // without needing a BuildContext from inside the messaging callback.
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
+  late final TagPushListener _tagPushes;
 
   @override
   void initState() {
     super.initState();
     _bootFuture = _boot();
+    _tagPushes = widget.buildTagPushListener(_messengerKey);
+    // Attach early — the listener swallows messages whose type != 'tag',
+    // so it's safe to leave on for the whole app lifecycle even if the
+    // user is still on the onboarding screen when a stray message lands.
+    unawaited(_tagPushes.attach());
   }
 
   @override
@@ -93,12 +120,21 @@ class _SnapshotAppState extends State<SnapshotApp> {
     // restart — without this, each restart leaks one set of natives.
     // Production teardown (process exit) reclaims either way.
     unawaited(widget.embedder.close());
+    unawaited(widget.fcm.dispose());
+    unawaited(_tagPushes.dispose());
     super.dispose();
   }
 
   Future<UserProfile?> _boot() async {
     final uid = await widget.auth.signInAnonymously();
-    return widget.users.get(uid);
+    final profile = await widget.users.get(uid);
+    if (profile != null) {
+      // Returning user — register for FCM in the background. Pre-onboarded
+      // users have no users/{uid} doc, so we skip until onboarding writes
+      // it; the post-onboarding callback below picks them up.
+      unawaited(widget.fcm.register(uid));
+    }
+    return profile;
   }
 
   void _onOnboardingComplete(UserProfile profile) {
@@ -107,6 +143,9 @@ class _SnapshotAppState extends State<SnapshotApp> {
     setState(() {
       _bootFuture = Future.value(profile);
     });
+    // First-time users — onboarding just wrote users/{uid}, so the FCM
+    // token write has a doc to update against. Fire and forget.
+    unawaited(widget.fcm.register(profile.uid));
   }
 
   @override
@@ -114,6 +153,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
     return MaterialApp(
       title: 'Snapshot',
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: _messengerKey,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
@@ -140,6 +180,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
             profile: profile,
             embedder: widget.embedder,
             lobbies: widget.lobbies,
+            tags: widget.tags,
           );
         },
       ),
@@ -206,10 +247,12 @@ class _Home extends StatefulWidget {
   final UserProfile profile;
   final FaceEmbedder embedder;
   final LobbyRepository lobbies;
+  final TagRepository tags;
   const _Home({
     required this.profile,
     required this.embedder,
     required this.lobbies,
+    required this.tags,
   });
 
   @override
@@ -274,6 +317,8 @@ class _HomeState extends State<_Home> {
   Widget build(BuildContext context) {
     return LobbyEntryScreen(
       repo: widget.lobbies,
+      tags: widget.tags,
+      embedder: widget.embedder,
       currentUid: widget.profile.uid,
       displayName: widget.profile.displayName,
       child: kDebugMode ? _verifyPanel() : null,

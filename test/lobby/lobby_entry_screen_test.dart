@@ -1,16 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/lobby/lobby_entry_screen.dart';
+import 'package:snapshot/services/tag_repository.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
+import 'package:snapshot/services/testing/in_memory_tag_repository.dart';
 
 void main() {
   testWidgets('Create lobby button takes the host into the waiting room', (tester) async {
     final repo = InMemoryLobbyRepository(currentUid: 'host-1')
       ..registerProfile('host-1', displayName: 'Alice');
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
 
     await tester.pumpWidget(MaterialApp(
-      home: LobbyEntryScreen(repo: repo, currentUid: 'host-1', displayName: 'Alice'),
+      home: LobbyEntryScreen(
+        repo: repo,
+        tags: tags,
+        embedder: const FakeFaceEmbedder(),
+        currentUid: 'host-1',
+        displayName: 'Alice',
+      ),
     ));
 
     await tester.tap(find.text('Create lobby'));
@@ -28,9 +38,16 @@ void main() {
       ..registerProfile('joiner-1', displayName: 'Bob');
     final created = await repo.createLobby();
     repo.currentUid = 'joiner-1';
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
 
     await tester.pumpWidget(MaterialApp(
-      home: LobbyEntryScreen(repo: repo, currentUid: 'joiner-1', displayName: 'Bob'),
+      home: LobbyEntryScreen(
+        repo: repo,
+        tags: tags,
+        embedder: const FakeFaceEmbedder(),
+        currentUid: 'joiner-1',
+        displayName: 'Bob',
+      ),
     ));
 
     await tester.tap(find.text('Join a lobby'));

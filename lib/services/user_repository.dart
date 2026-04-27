@@ -11,4 +11,10 @@ abstract class UserRepository {
   /// Persists [profile] to Firestore. Overwrites existing data — onboarding
   /// is the only write path in v1.
   Future<void> save(UserProfile profile);
+
+  /// Updates `users/{uid}.fcmToken` after FCM registration succeeds.
+  /// Required by `submitTag`'s best-effort push to the victim — see
+  /// tech-plan §326. Token-only update; other onboarding fields are not
+  /// touched (firestore.rules `isValidFcmTokenUpdate`).
+  Future<void> setFcmToken(String uid, String token);
 }

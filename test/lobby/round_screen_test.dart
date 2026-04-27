@@ -1,11 +1,17 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:snapshot/face/no_face_detected_exception.dart';
+import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/lobby/round_results_screen.dart';
 import 'package:snapshot/lobby/round_screen.dart';
 import 'package:snapshot/models/lobby.dart';
 import 'package:snapshot/models/lobby_player.dart';
 import 'package:snapshot/services/lobby_repository.dart';
+import 'package:snapshot/services/tag_repository.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
+import 'package:snapshot/services/testing/in_memory_tag_repository.dart';
 
 Future<({InMemoryLobbyRepository repo, String lobbyId})> _activeLobby() async {
   final repo = InMemoryLobbyRepository(currentUid: 'host-1')
@@ -26,19 +32,36 @@ Future<({InMemoryLobbyRepository repo, String lobbyId})> _activeLobby() async {
   return (repo: repo, lobbyId: created.lobbyId);
 }
 
+/// Pump enough times for microtasks + a few animation frames to settle,
+/// but not far enough to trip [RoundScreen]'s 1 Hz countdown ticker.
+/// `pumpAndSettle` would otherwise loop forever — every tick scheduled
+/// by the periodic timer keeps re-arming the settle-loop.
+Future<void> _settleShortOf1s(WidgetTester tester) async {
+  for (var i = 0; i < 10; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
+/// Bytes the [FakeFaceEmbedder] hashes deterministically — content
+/// doesn't matter as long as it's non-empty (the fake hashes anything).
+final Uint8List _fakeJpegBytes = Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]);
+
 void main() {
-  testWidgets('renders countdown and alive count', (tester) async {
+  testWidgets('renders countdown, lives, and alive count', (tester) async {
     final ctx = await _activeLobby();
-    // Pin the clock so the displayed countdown is deterministic.
     ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime(2026, 1, 1, 12));
     final now = DateTime(2026, 1, 1, 12, 0, 30);
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
 
     await tester.pumpWidget(
       MaterialApp(
         home: RoundScreen(
           repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
+          pickPhoto: () async => null,
           clock: () => now,
         ),
       ),
@@ -48,7 +71,150 @@ void main() {
 
     // 60s round, 30s elapsed → 30s remaining.
     expect(find.text('00:30'), findsOneWidget);
-    expect(find.text('2 of 2 still alive'), findsOneWidget);
+    // Top bar: 3 lives, 1 alive opponent.
+    expect(find.text('3'), findsOneWidget); // lives
+    expect(find.text('1'), findsOneWidget); // opponents alive
+
+    addTearDown(ctx.repo.dispose);
+  });
+
+  testWidgets('shutter → hit → toast shows + lives reflect', (tester) async {
+    final ctx = await _activeLobby();
+    ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+    final tags = InMemoryTagRepository.fromQueue([
+      const TagSubmission(
+        result: TagResult.hit,
+        retainPhoto: false,
+        tagId: '__placeholder__',
+        victimLivesRemaining: 2,
+        eliminated: false,
+      ),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
+          lobbyId: ctx.lobbyId,
+          currentUid: 'host-1',
+          pickPhoto: () async => _fakeJpegBytes,
+        ),
+      ),
+    );
+    await _settleShortOf1s(tester);
+
+    await tester.tap(find.byIcon(Icons.camera_alt));
+    await _settleShortOf1s(tester);
+
+    expect(tags.submissions, hasLength(1));
+    expect(tags.submissions.single.lobbyId, ctx.lobbyId);
+    expect(tags.submissions.single.modelVersion, 'fake-v1');
+    expect(tags.submissions.single.embeddingLength, 128);
+    expect(find.textContaining('Hit'), findsOneWidget);
+    expect(find.textContaining('2 lives'), findsOneWidget);
+    // retainPhoto was false → no upload.
+    expect(tags.uploads, isEmpty);
+
+    addTearDown(ctx.repo.dispose);
+  });
+
+  testWidgets(
+      'shutter → no_match (borderline / retainPhoto=true) → photo is uploaded',
+      (tester) async {
+    final ctx = await _activeLobby();
+    ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+    final tags = InMemoryTagRepository.fromQueue([
+      const TagSubmission(
+        result: TagResult.noMatch,
+        retainPhoto: true,
+        tagId: '__placeholder__',
+      ),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
+          lobbyId: ctx.lobbyId,
+          currentUid: 'host-1',
+          pickPhoto: () async => _fakeJpegBytes,
+        ),
+      ),
+    );
+    await _settleShortOf1s(tester);
+
+    await tester.tap(find.byIcon(Icons.camera_alt));
+    await _settleShortOf1s(tester);
+
+    expect(find.textContaining('No match'), findsOneWidget);
+    expect(tags.uploads, hasLength(1));
+    expect(tags.uploads.single.lobbyId, ctx.lobbyId);
+    // tagId echoed back from the submission round-trips through the repo.
+    expect(tags.uploads.single.tagId, tags.submissions.single.tagId);
+
+    addTearDown(ctx.repo.dispose);
+  });
+
+  testWidgets(
+      'shutter → no face detected → local toast, submitTag is NOT called',
+      (tester) async {
+    final ctx = await _activeLobby();
+    ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(
+            throwOnEmbed: NoFaceDetectedException(),
+          ),
+          lobbyId: ctx.lobbyId,
+          currentUid: 'host-1',
+          pickPhoto: () async => _fakeJpegBytes,
+        ),
+      ),
+    );
+    await _settleShortOf1s(tester);
+
+    await tester.tap(find.byIcon(Icons.camera_alt));
+    await _settleShortOf1s(tester);
+
+    expect(find.textContaining('No face detected'), findsOneWidget);
+    expect(tags.submissions, isEmpty);
+    expect(tags.uploads, isEmpty);
+
+    addTearDown(ctx.repo.dispose);
+  });
+
+  testWidgets('shutter → user cancels camera → no submission, no error',
+      (tester) async {
+    final ctx = await _activeLobby();
+    ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
+          lobbyId: ctx.lobbyId,
+          currentUid: 'host-1',
+          pickPhoto: () async => null,
+        ),
+      ),
+    );
+    await _settleShortOf1s(tester);
+
+    await tester.tap(find.byIcon(Icons.camera_alt));
+    await _settleShortOf1s(tester);
+
+    expect(tags.submissions, isEmpty);
+    expect(find.textContaining('No match'), findsNothing);
+    expect(find.textContaining('Hit'), findsNothing);
 
     addTearDown(ctx.repo.dispose);
   });
@@ -56,24 +222,24 @@ void main() {
   testWidgets('calls endRound when the timer expires and routes to results',
       (tester) async {
     final ctx = await _activeLobby();
-    // Backdate startedAt so the round is already past expiry from the
-    // moment we pump (round is 60s, elapsed = 120s).
     ctx.repo.debugForceStartedAt(
       ctx.lobbyId,
       DateTime.now().subtract(const Duration(seconds: 120)),
     );
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
 
     await tester.pumpWidget(
       MaterialApp(
         home: RoundScreen(
           repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
+          pickPhoto: () async => null,
         ),
       ),
     );
-    // First frame fires _maybeEnd via the StreamBuilder rebuild — let it
-    // settle, the repo flips to ended, and the post-frame routes us.
     await tester.pumpAndSettle();
 
     expect(find.byType(RoundResultsScreen), findsOneWidget);
@@ -82,13 +248,17 @@ void main() {
 
   testWidgets('shows unavailable when watchLobby errors', (tester) async {
     final repo = _ErroringRepo();
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
 
     await tester.pumpWidget(
       MaterialApp(
         home: RoundScreen(
           repo: repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
+          pickPhoto: () async => null,
         ),
       ),
     );
@@ -101,13 +271,17 @@ void main() {
   testWidgets('shows unavailable when the lobby disappears mid-round',
       (tester) async {
     final repo = _DeletingRepo();
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
 
     await tester.pumpWidget(
       MaterialApp(
         home: RoundScreen(
           repo: repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
+          pickPhoto: () async => null,
         ),
       ),
     );
@@ -120,16 +294,18 @@ void main() {
 
   testWidgets("doesn't end the round when startedAt hasn't propagated",
       (tester) async {
-    // Round whose timer can't be evaluated yet — startedAt is null. The
-    // ticker should leave it alone instead of looping endRound calls.
     final repo = _ActiveButNoStartedAtRepo();
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
 
     await tester.pumpWidget(
       MaterialApp(
         home: RoundScreen(
           repo: repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
+          pickPhoto: () async => null,
         ),
       ),
     );

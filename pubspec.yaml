@@ -19,6 +19,7 @@ dependencies:
   cloud_firestore: ^5.4.0        # users/{uid} profile + future lobby state
   firebase_storage: ^12.3.0      # selfie thumbs + borderline tag photos (§5.9)
   cloud_functions: ^5.1.0        # createLobby / joinLobby callables (§5.4)
+  firebase_messaging: ^15.1.0    # FCM tag-push delivery (§5.4 / submitTag victim push)
 
   # Lobby flow (per tech-plan §5.3)
   qr_flutter: ^4.1.0                     # render the join QR (host waiting room)

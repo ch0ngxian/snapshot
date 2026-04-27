@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../face/face_embedder.dart';
 import '../services/lobby_repository.dart';
+import '../services/tag_repository.dart';
 import 'join_lobby_screen.dart';
 import 'waiting_room_screen.dart';
 
@@ -8,6 +10,8 @@ import 'waiting_room_screen.dart';
 /// into [WaitingRoomScreen] once the lobby is established.
 class LobbyEntryScreen extends StatefulWidget {
   final LobbyRepository repo;
+  final TagRepository tags;
+  final FaceEmbedder embedder;
   final String currentUid;
   final String displayName;
 
@@ -18,6 +22,8 @@ class LobbyEntryScreen extends StatefulWidget {
   const LobbyEntryScreen({
     super.key,
     required this.repo,
+    required this.tags,
+    required this.embedder,
     required this.currentUid,
     required this.displayName,
     this.child,
@@ -43,6 +49,8 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => WaitingRoomScreen(
           repo: widget.repo,
+          tags: widget.tags,
+          embedder: widget.embedder,
           lobbyId: created.lobbyId,
           currentUid: widget.currentUid,
         ),
@@ -71,6 +79,8 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => WaitingRoomScreen(
         repo: widget.repo,
+        tags: widget.tags,
+        embedder: widget.embedder,
         lobbyId: lobbyId,
         currentUid: widget.currentUid,
       ),

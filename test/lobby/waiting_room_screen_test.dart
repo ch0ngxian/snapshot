@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/lobby/round_screen.dart';
 import 'package:snapshot/lobby/rules_editor.dart';
 import 'package:snapshot/lobby/waiting_room_screen.dart';
 import 'package:snapshot/models/lobby.dart';
+import 'package:snapshot/services/tag_repository.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
+import 'package:snapshot/services/testing/in_memory_tag_repository.dart';
 
 Future<void> _pumpScreen(
   WidgetTester tester, {
@@ -16,6 +19,8 @@ Future<void> _pumpScreen(
   await tester.pumpWidget(MaterialApp(
     home: WaitingRoomScreen(
       repo: repo,
+      tags: InMemoryTagRepository.fromQueue(const <TagSubmission>[]),
+      embedder: const FakeFaceEmbedder(),
       lobbyId: lobbyId,
       currentUid: currentUid,
     ),
