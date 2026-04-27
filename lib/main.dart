@@ -11,11 +11,14 @@ import 'face/face_embedder.dart';
 import 'face/mobilefacenet_embedder.dart';
 import 'face/no_face_detected_exception.dart';
 import 'firebase_options.dart';
+import 'lobby/lobby_entry_screen.dart';
 import 'models/user_profile.dart';
 import 'onboarding/onboarding_flow.dart';
 import 'services/auth_bootstrap.dart';
 import 'services/firebase_auth_bootstrap.dart';
+import 'services/firestore_lobby_repository.dart';
 import 'services/firestore_user_repository.dart';
+import 'services/lobby_repository.dart';
 import 'services/user_repository.dart';
 
 Future<void> main() async {
@@ -35,6 +38,7 @@ Future<void> main() async {
     runApp(SnapshotApp(
       auth: FirebaseAuthBootstrap(),
       users: FirestoreUserRepository(),
+      lobbies: FirestoreLobbyRepository(),
       embedder: embedder,
     ));
   } catch (err, stack) {
@@ -57,12 +61,14 @@ Future<void> main() async {
 class SnapshotApp extends StatefulWidget {
   final AuthBootstrap auth;
   final UserRepository users;
+  final LobbyRepository lobbies;
   final FaceEmbedder embedder;
 
   const SnapshotApp({
     super.key,
     required this.auth,
     required this.users,
+    required this.lobbies,
     required this.embedder,
   });
 
@@ -130,7 +136,11 @@ class _SnapshotAppState extends State<SnapshotApp> {
               onComplete: _onOnboardingComplete,
             );
           }
-          return _Home(profile: profile, embedder: widget.embedder);
+          return _Home(
+            profile: profile,
+            embedder: widget.embedder,
+            lobbies: widget.lobbies,
+          );
         },
       ),
     );
@@ -188,15 +198,19 @@ class _BootError extends StatelessWidget {
   }
 }
 
-/// Phase 0 placeholder home. Lobby UI lands in Phase 1.
-///
-/// Includes a "Re-scan & compare" panel for the §314 sanity check: confirm
-/// the embedder discriminates (same face → high cosine, different → low) and
-/// eyeball pipeline latency. Real §314 gate runs on a low-end Android.
+/// Post-onboarding home. Primary CTAs are Create / Join (lobby flow,
+/// tech-plan §318). The §314 "Re-scan & compare" sanity panel sits below
+/// in debug builds — it's still useful for eyeballing pipeline latency
+/// and discrimination, but it's no longer the only thing on the screen.
 class _Home extends StatefulWidget {
   final UserProfile profile;
   final FaceEmbedder embedder;
-  const _Home({required this.profile, required this.embedder});
+  final LobbyRepository lobbies;
+  const _Home({
+    required this.profile,
+    required this.embedder,
+    required this.lobbies,
+  });
 
   @override
   State<_Home> createState() => _HomeState();
@@ -258,60 +272,55 @@ class _HomeState extends State<_Home> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = widget.profile;
-    return Scaffold(
-      appBar: AppBar(title: Text('Hi, ${profile.displayName}')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'You are onboarded.',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            ),
+    return LobbyEntryScreen(
+      repo: widget.lobbies,
+      displayName: widget.profile.displayName,
+      // Verification panel is still embedded as a debug affordance — see
+      // _verifyPanel below. Using a wrapper keeps LobbyEntryScreen widget-
+      // testable in isolation.
+      child: kDebugMode ? _verifyPanel() : null,
+    );
+  }
+
+  Widget _verifyPanel() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text(
+            'Verify face recognition (§314 sanity)',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Same face → cosine ≳ 0.7. Different face → cosine ≲ 0.4. '
+            'Production threshold is 0.65.',
+            style: TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _verifying ? null : _rescan,
+            icon: const Icon(Icons.refresh),
+            label: Text(_verifying ? 'Scanning…' : 'Re-scan & compare'),
+          ),
+          if (_cosine != null) ...[
             const SizedBox(height: 8),
-            Text('uid: ${profile.uid}'),
-            Text('embedding model: ${profile.embeddingModelVersion}'),
-            Text('embedding dim: ${profile.faceEmbedding.length}'),
-            const Divider(height: 32),
-            const Text(
-              'Verify face recognition (§314 sanity)',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Same face → cosine ≳ 0.7. Different face → cosine ≲ 0.4. '
-              'Production threshold is 0.65.',
-              style: TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _verifying ? null : _rescan,
-              icon: const Icon(Icons.refresh),
-              label: Text(_verifying ? 'Scanning…' : 'Re-scan & compare'),
-            ),
-            if (_cosine != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                'cosine: ${_cosine!.toStringAsFixed(3)}    '
-                'embed pipeline: ${_elapsedMs}ms',
-              ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                _error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            ],
-            const SizedBox(height: 24),
-            const Text(
-              'Lobby UI lands in Phase 1.',
-              style: TextStyle(fontStyle: FontStyle.italic),
+            Text(
+              'cosine: ${_cosine!.toStringAsFixed(3)}    '
+              'embed pipeline: ${_elapsedMs}ms',
             ),
           ],
-        ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
+        ],
       ),
     );
   }

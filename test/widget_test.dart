@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/main.dart';
 import 'package:snapshot/services/testing/fake_auth_bootstrap.dart';
+import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
 import 'package:snapshot/services/testing/in_memory_user_repository.dart';
 
 void main() {
@@ -13,6 +14,7 @@ void main() {
         SnapshotApp(
           auth: FakeAuthBootstrap(),
           users: InMemoryUserRepository(),
+          lobbies: InMemoryLobbyRepository(currentUid: 'fake'),
           embedder: const FakeFaceEmbedder(),
         ),
       );
