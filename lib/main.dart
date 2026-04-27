@@ -274,10 +274,8 @@ class _HomeState extends State<_Home> {
   Widget build(BuildContext context) {
     return LobbyEntryScreen(
       repo: widget.lobbies,
+      currentUid: widget.profile.uid,
       displayName: widget.profile.displayName,
-      // Verification panel is still embedded as a debug affordance — see
-      // _verifyPanel below. Using a wrapper keeps LobbyEntryScreen widget-
-      // testable in isolation.
       child: kDebugMode ? _verifyPanel() : null,
     );
   }

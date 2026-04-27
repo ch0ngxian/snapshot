@@ -2,8 +2,7 @@ import 'dart:typed_data';
 
 /// Per-player state at `lobbies/{lobbyId}/players/{uid}` (tech-plan §99).
 /// `embeddingSnapshot` is denormalized from `users/{uid}` at join time so
-/// Phase 2's `submitTag` can read all opponents in a single subcollection
-/// query (§111).
+/// `submitTag` can read all opponents in a single subcollection query (§111).
 class LobbyPlayer {
   final String uid;
   final String displayName;
@@ -27,12 +26,9 @@ class LobbyPlayer {
 enum LobbyPlayerStatus { alive, eliminated }
 
 LobbyPlayerStatus lobbyPlayerStatusFromString(String raw) {
-  switch (raw) {
-    case 'alive':
-      return LobbyPlayerStatus.alive;
-    case 'eliminated':
-      return LobbyPlayerStatus.eliminated;
-    default:
-      throw ArgumentError('unknown player status: $raw');
+  try {
+    return LobbyPlayerStatus.values.byName(raw);
+  } on ArgumentError {
+    throw ArgumentError('unknown player status: $raw');
   }
 }

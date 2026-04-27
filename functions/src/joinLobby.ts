@@ -2,6 +2,8 @@ import * as admin from "firebase-admin";
 import { CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions";
 
+import { buildPlayerDoc, requireOnboardedCaller } from "./lobbyAuth";
+
 interface JoinLobbyRequest {
   code?: string;
 }
@@ -12,36 +14,22 @@ interface JoinLobbyResult {
 
 const CODE_PATTERN = /^[A-Z0-9]{6}$/;
 
-// Caps the player count to keep `submitTag`'s opponent fan-in bounded
+// Caps the player count so `submitTag`'s opponent fan-in stays bounded
 // (tech-plan §111, §125 — ≤20 players per lobby).
 const MAX_PLAYERS = 20;
-
-// Default starting lives (tech-plan §322). `joinLobby` reads from the
-// lobby doc rather than a hardcoded default so a host who tweaks rules in
-// a follow-up PR doesn't need a function deploy. Falls back to this
-// constant only if the lobby doc is missing the field.
-const FALLBACK_STARTING_LIVES = 3;
 
 /**
  * Per tech-plan §319/§321: looks up a lobby by its 6-char code and adds the
  * caller as a player. Idempotent — re-running on a code the caller already
- * joined returns the same lobbyId without rewriting the player doc (so a
- * double-tap on the QR scanner doesn't reset their lives).
+ * joined returns the same lobbyId without rewriting the player doc.
  *
- * Embedding is snapshotted from `users/{uid}` at join time (§111) so the
- * Phase 2 tag check reads opponents in a single subcollection query rather
- * than fanning out across `users/*`.
+ * NOTE: cap + existing-player check are read-then-write rather than
+ * transactional. At v1 friends/family scale (≤20-player parties, no
+ * concurrent-join contention) the race is theoretical; tightening to a
+ * proper transaction is tracked under Phase 3 hardening (§336).
  */
 export const joinLobby = onCall(
-  { region: "asia-southeast1" },
   async (request: CallableRequest<JoinLobbyRequest>): Promise<JoinLobbyResult> => {
-    if (!request.auth) {
-      throw new HttpsError(
-        "unauthenticated",
-        "joinLobby requires an authenticated caller",
-      );
-    }
-    const uid = request.auth.uid;
     const rawCode = (request.data?.code ?? "").trim().toUpperCase();
     if (!CODE_PATTERN.test(rawCode)) {
       throw new HttpsError(
@@ -51,21 +39,16 @@ export const joinLobby = onCall(
     }
 
     const db = admin.firestore();
-    const userSnap = await db.collection("users").doc(uid).get();
-    if (!userSnap.exists) {
-      throw new HttpsError(
-        "failed-precondition",
-        "user must complete onboarding before joining a lobby",
-      );
-    }
-    const user = userSnap.data()!;
+    const [{ uid, user }, matches] = await Promise.all([
+      requireOnboardedCaller(request, db),
+      db
+        .collection("lobbies")
+        .where("code", "==", rawCode)
+        .where("status", "==", "waiting")
+        .limit(1)
+        .get(),
+    ]);
 
-    const matches = await db
-      .collection("lobbies")
-      .where("code", "==", rawCode)
-      .where("status", "==", "waiting")
-      .limit(1)
-      .get();
     if (matches.empty) {
       throw new HttpsError(
         "not-found",
@@ -90,23 +73,14 @@ export const joinLobby = onCall(
       throw new HttpsError("resource-exhausted", "lobby is full");
     }
 
-    const lobbyData = lobbyDoc.data() as {
-      rules?: { startingLives?: number };
-    };
-    const startingLives =
-      lobbyData.rules?.startingLives ?? FALLBACK_STARTING_LIVES;
+    const startingLives = (lobbyDoc.data() as {
+      rules: { startingLives: number };
+    }).rules.startingLives;
 
     await lobbyRef
       .collection("players")
       .doc(uid)
-      .set({
-        displayName: user.displayName,
-        livesRemaining: startingLives,
-        status: "alive",
-        joinedAt: admin.firestore.FieldValue.serverTimestamp(),
-        embeddingSnapshot: user.faceEmbedding,
-        embeddingModelVersion: user.embeddingModelVersion,
-      });
+      .set(buildPlayerDoc(user, startingLives));
 
     logger.info("player joined lobby", { lobbyId, uid });
     return { lobbyId };

@@ -8,16 +8,17 @@ import 'waiting_room_screen.dart';
 /// into [WaitingRoomScreen] once the lobby is established.
 class LobbyEntryScreen extends StatefulWidget {
   final LobbyRepository repo;
+  final String currentUid;
   final String displayName;
 
-  /// Optional extra content rendered below the primary CTAs. The app's
-  /// `_Home` slots the debug §314 verification panel here in debug builds;
-  /// release builds pass `null`.
+  /// Optional extra content rendered below the primary CTAs (the §314
+  /// verification panel in debug builds).
   final Widget? child;
 
   const LobbyEntryScreen({
     super.key,
     required this.repo,
+    required this.currentUid,
     required this.displayName,
     this.child,
   });
@@ -43,8 +44,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
         builder: (_) => WaitingRoomScreen(
           repo: widget.repo,
           lobbyId: created.lobbyId,
-          code: created.code,
-          isHost: true,
+          currentUid: widget.currentUid,
         ),
       ));
       if (!mounted) return;
@@ -68,18 +68,11 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
       ),
     );
     if (lobbyId == null || !mounted) return;
-    // We have to look up the lobby's code to display it in the joiner's
-    // waiting room. The first emission from `watchLobby` carries it.
-    final lobby = await widget.repo.watchLobby(lobbyId).firstWhere(
-          (l) => l != null,
-        );
-    if (lobby == null || !mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => WaitingRoomScreen(
         repo: widget.repo,
-        lobbyId: lobby.lobbyId,
-        code: lobby.code,
-        isHost: false,
+        lobbyId: lobbyId,
+        currentUid: widget.currentUid,
       ),
     ));
   }

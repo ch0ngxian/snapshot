@@ -8,15 +8,13 @@ Future<void> _pumpScreen(
   WidgetTester tester, {
   required InMemoryLobbyRepository repo,
   required String lobbyId,
-  required String code,
-  required bool isHost,
+  required String currentUid,
 }) async {
   await tester.pumpWidget(MaterialApp(
     home: WaitingRoomScreen(
       repo: repo,
       lobbyId: lobbyId,
-      code: code,
-      isHost: isHost,
+      currentUid: currentUid,
     ),
   ));
   // Let stream subscriptions emit their initial values.
@@ -34,8 +32,7 @@ void main() {
       tester,
       repo: repo,
       lobbyId: created.lobbyId,
-      code: created.code,
-      isHost: true,
+      currentUid: 'host-1',
     );
 
     expect(find.text(created.code), findsOneWidget);
@@ -57,8 +54,7 @@ void main() {
       tester,
       repo: repo,
       lobbyId: created.lobbyId,
-      code: created.code,
-      isHost: false,
+      currentUid: 'joiner-1',
     );
 
     expect(find.text(created.code), findsOneWidget);
@@ -79,8 +75,7 @@ void main() {
       tester,
       repo: repo,
       lobbyId: created.lobbyId,
-      code: created.code,
-      isHost: true,
+      currentUid: 'host-1',
     );
 
     expect(find.text('Alice'), findsOneWidget);

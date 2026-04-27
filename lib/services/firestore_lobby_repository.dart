@@ -1,10 +1,9 @@
-import 'dart:typed_data';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
+import 'embedding_codec.dart';
 import 'lobby_repository.dart';
 
 /// Production [LobbyRepository] backed by Firestore + the `createLobby` /
@@ -100,18 +99,14 @@ class FirestoreLobbyRepository implements LobbyRepository {
   }
 
   static LobbyPlayer _parsePlayer(String uid, Map<String, dynamic> data) {
-    final raw = (data['embeddingSnapshot'] as List<dynamic>?) ?? const [];
-    final embedding = Float32List(raw.length);
-    for (var i = 0; i < raw.length; i++) {
-      embedding[i] = (raw[i] as num).toDouble();
-    }
     return LobbyPlayer(
       uid: uid,
       displayName: data['displayName'] as String,
       livesRemaining: (data['livesRemaining'] as num).toInt(),
       status: lobbyPlayerStatusFromString(data['status'] as String),
       joinedAt: (data['joinedAt'] as Timestamp).toDate(),
-      embeddingSnapshot: embedding,
+      embeddingSnapshot:
+          decodeEmbedding((data['embeddingSnapshot'] as List<dynamic>?) ?? const []),
       embeddingModelVersion: data['embeddingModelVersion'] as String,
     );
   }

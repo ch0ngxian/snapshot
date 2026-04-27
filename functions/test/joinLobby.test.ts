@@ -91,7 +91,10 @@ describe("joinLobby", () => {
         {
           id: lobbyId,
           ref: lobbyDocRef(lobbyId),
-          data: () => ({ status: "waiting" }),
+          data: () => ({
+            status: "waiting",
+            rules: { startingLives: 3, durationSeconds: 600, immunitySeconds: 10 },
+          }),
         },
       ],
     });

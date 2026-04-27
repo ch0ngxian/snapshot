@@ -10,7 +10,7 @@ void main() {
       ..registerProfile('host-1', displayName: 'Alice');
 
     await tester.pumpWidget(MaterialApp(
-      home: LobbyEntryScreen(repo: repo, displayName: 'Alice'),
+      home: LobbyEntryScreen(repo: repo, currentUid: 'host-1', displayName: 'Alice'),
     ));
 
     await tester.tap(find.text('Create lobby'));
@@ -30,7 +30,7 @@ void main() {
     repo.currentUid = 'joiner-1';
 
     await tester.pumpWidget(MaterialApp(
-      home: LobbyEntryScreen(repo: repo, displayName: 'Bob'),
+      home: LobbyEntryScreen(repo: repo, currentUid: 'joiner-1', displayName: 'Bob'),
     ));
 
     await tester.tap(find.text('Join a lobby'));

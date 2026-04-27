@@ -28,7 +28,6 @@ interface DeleteUserDataResult {
  *      backstop still applies).
  */
 export const deleteUserData = onCall(
-  { region: "asia-southeast1" },
   async (request: CallableRequest<unknown>): Promise<DeleteUserDataResult> => {
     if (!request.auth) {
       throw new HttpsError(
