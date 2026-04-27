@@ -60,6 +60,25 @@ class FirestoreLobbyRepository implements LobbyRepository {
   }
 
   @override
+  Future<void> startRound(String lobbyId, LobbyRules rules) async {
+    await _functions.httpsCallable('startRound').call(<String, dynamic>{
+      'lobbyId': lobbyId,
+      'rules': <String, dynamic>{
+        'startingLives': rules.startingLives,
+        'durationSeconds': rules.durationSeconds,
+        'immunitySeconds': rules.immunitySeconds,
+      },
+    });
+  }
+
+  @override
+  Future<void> endRound(String lobbyId) async {
+    await _functions
+        .httpsCallable('endRound')
+        .call(<String, dynamic>{'lobbyId': lobbyId});
+  }
+
+  @override
   Stream<Lobby?> watchLobby(String lobbyId) {
     return _lobbies.doc(lobbyId).snapshots().map((snap) {
       if (!snap.exists) return null;

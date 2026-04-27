@@ -117,6 +117,11 @@ class _RecordingRepo implements LobbyRepository {
     return 'lobby-recorded';
   }
   @override
+  Future<void> startRound(String lobbyId, LobbyRules rules) async =>
+      throw UnimplementedError();
+  @override
+  Future<void> endRound(String lobbyId) async => throw UnimplementedError();
+  @override
   Stream<Lobby?> watchLobby(String lobbyId) => const Stream.empty();
   @override
   Stream<List<LobbyPlayer>> watchPlayers(String lobbyId) => const Stream.empty();

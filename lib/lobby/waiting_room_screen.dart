@@ -5,11 +5,15 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
 import '../services/lobby_repository.dart';
+import 'round_screen.dart';
+import 'rules_editor.dart';
 
 /// Pre-round waiting screen. The host sees the QR (so co-located players
-/// can scan to join — tech-plan §163) plus the 6-char code as a fallback;
-/// joiners see just the code and the live player list.
-class WaitingRoomScreen extends StatelessWidget {
+/// can scan to join — tech-plan §163) plus the 6-char code as a fallback,
+/// the live player list, the rules editor, and the Start button. Joiners
+/// see just the code and the player list. Both auto-route to
+/// [RoundScreen] when the lobby flips to `active`.
+class WaitingRoomScreen extends StatefulWidget {
   final LobbyRepository repo;
   final String lobbyId;
   final String currentUid;
@@ -22,9 +26,58 @@ class WaitingRoomScreen extends StatelessWidget {
   });
 
   @override
+  State<WaitingRoomScreen> createState() => _WaitingRoomScreenState();
+}
+
+class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
+  // Local copy of the host's chosen rules. Initialized from the lobby doc
+  // on first emission, then owned client-side until Start fires it off via
+  // `startRound`. Joiners never see the editor, so this stays at defaults
+  // for their session.
+  LobbyRules? _rules;
+  bool _starting = false;
+  bool _routedToRound = false;
+  String? _error;
+
+  Future<void> _start() async {
+    final rules = _rules;
+    if (rules == null || _starting) return;
+    setState(() {
+      _starting = true;
+      _error = null;
+    });
+    try {
+      await widget.repo.startRound(widget.lobbyId, rules);
+      // Don't navigate from here — the lobby stream will emit status=active
+      // and the post-frame route below will pick it up. Same path host and
+      // joiners take, so the routing logic stays in one place.
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _starting = false;
+        _error = "Couldn't start the round: $e";
+      });
+    }
+  }
+
+  void _routeToRound() {
+    if (_routedToRound || !mounted) return;
+    _routedToRound = true;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => RoundScreen(
+          repo: widget.repo,
+          lobbyId: widget.lobbyId,
+          currentUid: widget.currentUid,
+        ),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return StreamBuilder<Lobby?>(
-      stream: repo.watchLobby(lobbyId),
+      stream: widget.repo.watchLobby(widget.lobbyId),
       builder: (context, snap) {
         if (snap.hasError) {
           return _LobbyUnavailable(
@@ -43,12 +96,19 @@ class WaitingRoomScreen extends StatelessWidget {
             message: "This lobby no longer exists or couldn't be found.",
           );
         }
-        final isHost = lobby.hostUid == currentUid;
+        // Hydrate the local rules state once we have a lobby snapshot.
+        _rules ??= lobby.rules;
+
+        if (lobby.status == LobbyStatus.active) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _routeToRound());
+        }
+
+        final isHost = lobby.hostUid == widget.currentUid;
         return Scaffold(
           appBar: AppBar(
             title: Text(isHost ? 'Your lobby' : 'Waiting for host'),
           ),
-          body: Padding(
+          body: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -75,32 +135,65 @@ class WaitingRoomScreen extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
                 const SizedBox(height: 8),
-                Expanded(
-                  child: StreamBuilder<List<LobbyPlayer>>(
-                    stream: repo.watchPlayers(lobbyId),
-                    builder: (context, snap) {
-                      final players = snap.data ?? const <LobbyPlayer>[];
-                      if (players.isEmpty) {
-                        return const Center(
-                          child: Padding(
-                            padding: EdgeInsets.symmetric(vertical: 16),
-                            child: CircularProgressIndicator(),
-                          ),
-                        );
-                      }
-                      return ListView.separated(
-                        itemCount: players.length,
-                        separatorBuilder: (_, _) => const Divider(height: 0),
-                        itemBuilder: (context, i) {
-                          final p = players[i];
-                          return ListTile(
-                            leading: const CircleAvatar(child: Icon(Icons.person)),
-                            title: Text(p.displayName),
-                          );
-                        },
+                StreamBuilder<List<LobbyPlayer>>(
+                  stream: widget.repo.watchPlayers(widget.lobbyId),
+                  builder: (context, playersSnap) {
+                    final players =
+                        playersSnap.data ?? const <LobbyPlayer>[];
+                    if (players.isEmpty) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: CircularProgressIndicator(),
+                        ),
                       );
-                    },
-                  ),
+                    }
+                    return Column(
+                      children: [
+                        for (var i = 0; i < players.length; i++) ...[
+                          if (i > 0) const Divider(height: 0),
+                          ListTile(
+                            leading: const CircleAvatar(
+                              child: Icon(Icons.person),
+                            ),
+                            title: Text(players[i].displayName),
+                          ),
+                        ],
+                        if (isHost) ...[
+                          const Divider(),
+                          RulesEditor(
+                            value: _rules!,
+                            enabled: !_starting,
+                            onChanged: (next) =>
+                                setState(() => _rules = next),
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            onPressed: (_starting || players.length < 2)
+                                ? null
+                                : _start,
+                            icon: const Icon(Icons.play_arrow),
+                            label: Text(
+                              _starting
+                                  ? 'Starting…'
+                                  : players.length < 2
+                                      ? 'Need 2 players to start'
+                                      : 'Start round',
+                            ),
+                          ),
+                          if (_error != null) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              _error!,
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ],
+                    );
+                  },
                 ),
               ],
             ),
