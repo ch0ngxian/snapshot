@@ -84,7 +84,7 @@ class _SelfieCaptureScreenState extends State<SelfieCaptureScreen> {
   }
 
   Future<Uint8List?> _defaultPicker() async {
-    // Cap at 1280px wide — face detection + a 112×112 MobileFaceNet crop
+    // Cap to 1280×1280 — face detection + a 112×112 MobileFaceNet crop
     // don't benefit from 18MP, and the Dart-side decode/bake/encode pass in
     // the embedder dominates pipeline latency on full-res inputs (§314).
     final picked = await ImagePicker().pickImage(

@@ -102,12 +102,17 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
 
     final normalized = _l2Normalize(Float32List.fromList(output[0]));
 
-    debugPrint(
-      '[embed] ${sw.elapsedMilliseconds}ms total — '
-      'decode=$tDecode bake=$tBake encodeJpg=$tEncode '
-      'detect=$tDetect crop+nhwc=$tCropAndConvert infer=$tInfer '
-      '(input ${decoded.width}x${decoded.height})',
-    );
+    // Wrapped in `assert` so the log + string interpolation are stripped
+    // entirely in release/profile — `debugPrint` itself runs in release.
+    assert(() {
+      debugPrint(
+        '[embed] ${sw.elapsedMilliseconds}ms total — '
+        'decode=$tDecode bake=$tBake encodeJpg=$tEncode '
+        'detect=$tDetect crop+nhwc=$tCropAndConvert infer=$tInfer '
+        '(input ${decoded.width}x${decoded.height})',
+      );
+      return true;
+    }());
 
     return normalized;
   }

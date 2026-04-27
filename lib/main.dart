@@ -1,12 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-
 import 'package:image_picker/image_picker.dart';
-
-import 'dart:io';
 
 import 'face/cosine_similarity.dart';
 import 'face/face_embedder.dart';
@@ -224,6 +222,7 @@ class _HomeState extends State<_Home> {
         maxWidth: 1280,
         maxHeight: 1280,
       );
+      if (!mounted) return;
       if (picked == null) {
         setState(() => _verifying = false);
         return;
