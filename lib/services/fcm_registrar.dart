@@ -42,6 +42,15 @@ class _FirebaseFcmRegistrar implements FcmRegistrar {
   /// subsequent calls are silent.
   @override
   Future<void> register(String uid) async {
+    // Cancel any prior subscription up front so every code path below —
+    // including the permission-denied early return — leaves us with at
+    // most one live onTokenRefresh listener. Otherwise a re-onboard or a
+    // permission revocation between calls strands the previous listener,
+    // which would keep writing tokens for a user who has just denied
+    // them.
+    await _refreshSub?.cancel();
+    _refreshSub = null;
+
     try {
       // iOS prompts; Android 13+ also prompts via the permission delegate
       // baked into firebase_messaging. On older Androids this returns
@@ -60,7 +69,6 @@ class _FirebaseFcmRegistrar implements FcmRegistrar {
       // Tokens rotate (app restore, FCM-side housekeeping). Listen for the
       // refresh stream so we never serve a stale victim push from a stored
       // token that no longer points at this device.
-      await _refreshSub?.cancel();
       _refreshSub = _messaging.onTokenRefresh.listen(
         (newToken) async {
           if (newToken.isEmpty) return;
