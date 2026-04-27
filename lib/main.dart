@@ -92,7 +92,11 @@ class _SnapshotAppState extends State<SnapshotApp> {
   }
 
   void _onOnboardingComplete(UserProfile profile) {
-    setState(() => _bootFuture = Future.value(profile));
+    // Block body, not arrow — `setState` rejects callbacks that return a
+    // value, and `_bootFuture = ...` evaluates to the assigned Future.
+    setState(() {
+      _bootFuture = Future.value(profile);
+    });
   }
 
   @override

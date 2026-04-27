@@ -59,14 +59,22 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
 
   @override
   Future<Float32List> embed(Uint8List imageBytes) async {
-    final face = await _detectLargestFace(imageBytes);
-
+    // image_picker's camera path on iOS writes JPEGs with raw camera-orientation
+    // pixels and an EXIF orientation tag. ML Kit doesn't always honor the tag,
+    // and `img.decodeImage` never does — so detection silently fails on
+    // portrait selfies, or succeeds with a bounding box that doesn't line up
+    // with our crop. Bake orientation once up front and feed the same upright
+    // pixels to both stages.
     final decoded = img.decodeImage(imageBytes);
     if (decoded == null) {
       throw ArgumentError('could not decode image bytes');
     }
+    final upright = img.bakeOrientation(decoded);
+    final uprightJpeg = Uint8List.fromList(img.encodeJpg(upright));
 
-    final resized = _cropAndResize(decoded, face.boundingBox);
+    final face = await _detectLargestFace(uprightJpeg);
+
+    final resized = _cropAndResize(upright, face.boundingBox);
     final input = _toNHWCFloat32(resized);
 
     final output = List.generate(
