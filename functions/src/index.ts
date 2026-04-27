@@ -11,3 +11,4 @@ export { createLobby } from "./createLobby";
 export { joinLobby } from "./joinLobby";
 export { startRound } from "./startRound";
 export { endRound } from "./endRound";
+export { submitTag } from "./submitTag";

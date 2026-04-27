@@ -73,10 +73,15 @@ export const submitTag = onCall(
     const lobbyRef = db.collection("lobbies").doc(lobbyId);
     const tagRef = lobbyRef.collection("tags").doc(tagId);
 
-    // Idempotent replay (outside tx — single doc read; verdict is immutable
-    // once written). Validate caller owns the tagId; otherwise a malicious
-    // client could probe other players' tag outcomes by guessing tagIds.
-    const existingTag = await tagRef.get();
+    // Run the idempotency probe in parallel with the RC threshold fetch —
+    // the RC load is 60s-cached so this only matters on instance cold start,
+    // but it's free symmetry. Validate caller owns the tagId; otherwise a
+    // malicious client could probe other players' tag outcomes by guessing
+    // tagIds.
+    const [existingTag, { threshold, halfWidth }] = await Promise.all([
+      tagRef.get(),
+      loadTagThresholds(),
+    ]);
     if (existingTag.exists) {
       const data = existingTag.data() as Record<string, unknown>;
       if (data.taggerUid !== callerUid) {
@@ -87,8 +92,6 @@ export const submitTag = onCall(
       }
       return replayVerdict(data, tagId);
     }
-
-    const { threshold, halfWidth } = await loadTagThresholds();
 
     const txOutcome = await db.runTransaction(async (tx) => {
       const lobbySnap = await tx.get(lobbyRef);
@@ -159,13 +162,9 @@ export const submitTag = onCall(
         };
       }
 
-      // Load alive opponents in one query.
-      const aliveQuery = lobbyRef
-        .collection("players")
-        .where("status", "==", "alive");
-      // Tag the query so the test harness can route it deterministically.
-      (aliveQuery as unknown as { _isAliveQuery: boolean })._isAliveQuery = true;
-      const aliveSnap = await tx.get(aliveQuery);
+      const aliveSnap = await tx.get(
+        lobbyRef.collection("players").where("status", "==", "alive"),
+      );
 
       const opponents: PlayerSnapshot[] = aliveSnap.docs
         .filter((d) => d.id !== callerUid)

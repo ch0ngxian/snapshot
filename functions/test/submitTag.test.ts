@@ -107,15 +107,7 @@ const runTransaction = jest.fn(
     }) => Promise<unknown>,
   ) => {
     const tx = {
-      get: jest.fn(async (target: unknown) => {
-        const t = target as
-          | { get?: jest.Mock }
-          | { _isAliveQuery?: boolean };
-        if ((t as { _isAliveQuery?: boolean })._isAliveQuery) {
-          return playersAliveQueryGet();
-        }
-        return (t as { get: jest.Mock }).get();
-      }),
+      get: jest.fn(async (target: { get: jest.Mock }) => target.get()),
       update: jest.fn((target: { update: jest.Mock }, data: unknown) =>
         target.update(data),
       ),
