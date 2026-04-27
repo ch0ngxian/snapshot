@@ -1,8 +1,7 @@
 rules_version = '2';
 
-// Phase 0 rules cover onboarding selfies. Tag photo rules per §5.9 land in
-// PR #3 of Phase 2 (alongside submitTag). Default-deny for anything not
-// explicitly allowed here.
+// Phase 0: onboarding selfies. Phase 2: borderline tag photos per §5.9.
+// Default-deny for anything not explicitly allowed here.
 service firebase.storage {
   match /b/{bucket}/o {
 
@@ -17,6 +16,43 @@ service firebase.storage {
         && fileName == request.auth.uid + '.jpg'
         && request.resource.size <= 1 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
+    }
+
+    // tags/{lobbyId}/{fileName}: borderline tag photos per §5.9. Uploaded
+    // by the client only when submitTag's verdict has retainPhoto=true.
+    // Defense-in-depth (the lifecycle rule on this prefix backstops any
+    // bypass within 30 days):
+    //   - caller must own the corresponding tag doc (taggerUid match)
+    //   - tag doc must be a real verdict (accepted is set)
+    //   - photoStorageRef field must exist and be null — clear-accept and
+    //     clear-reject tags are written with photoStorageRef='discarded',
+    //     which fails the null check; tag docs missing the field entirely
+    //     (older / malformed writes) fail the existence check
+    //   - filename charset is restricted so the tagId extraction can't be
+    //     subverted by extra dots
+    //   - reasonable size + content-type caps
+    //   - no read/update/delete from clients (server reads via Admin SDK;
+    //     lifecycle rule deletes after 30 days)
+    match /tags/{lobbyId}/{fileName} {
+      allow read, update, delete: if false;
+      allow create: if request.auth != null
+        && fileName.matches('^[A-Za-z0-9_-]+\\.jpg$')
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg'
+        && tagPhotoUploadAllowed(lobbyId, fileName);
+    }
+
+    function tagPhotoUploadAllowed(lobbyId, fileName) {
+      // fileName matches '^[A-Za-z0-9_-]+\.jpg$' so it has exactly one dot.
+      let tagId = fileName.split('\\.')[0];
+      let tag = firestore.get(
+        /databases/(default)/documents/lobbies/$(lobbyId)/tags/$(tagId)
+      );
+      return tag != null
+        && tag.data.taggerUid == request.auth.uid
+        && tag.data.accepted is bool
+        && tag.data.keys().hasAll(['photoStorageRef'])
+        && tag.data.photoStorageRef == null;
     }
 
     match /{allPaths=**} {
