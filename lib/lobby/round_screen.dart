@@ -1,31 +1,71 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
+import '../face/face_embedder.dart';
+import '../face/no_face_detected_exception.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
 import '../services/lobby_repository.dart';
+import '../services/tag_id.dart';
+import '../services/tag_repository.dart';
 import 'round_results_screen.dart';
+import 'scoreboard_sheet.dart';
 
-/// Phase 1 in-round placeholder. Subscribes to the lobby doc to (a) drive
-/// the countdown off `startedAt + durationSeconds` and (b) auto-route to
-/// [RoundResultsScreen] when status flips to `ended`. The actual camera +
-/// shutter UI is tech-plan §326 — Phase 2.
+/// In-round screen — primary surface during an active lobby. Renders the
+/// timer, lives, alive count, a shutter button (tech-plan §72-§78), and
+/// surfaces tag verdicts as toasts. Subscribes to the lobby doc to (a)
+/// drive the countdown off `startedAt + durationSeconds` and (b) auto-
+/// route to [RoundResultsScreen] when status flips to `ended`.
 class RoundScreen extends StatefulWidget {
   final LobbyRepository repo;
+  final TagRepository tags;
+  final FaceEmbedder embedder;
   final String lobbyId;
   final String currentUid;
+
+  /// Injectable shutter so widget tests can stub the camera path without
+  /// a real platform channel + file system. Returns the captured JPEG
+  /// bytes, or `null` if the user backed out of the camera. Production
+  /// uses [ImagePicker.pickImage] and `File.readAsBytes`.
+  final Future<Uint8List?> Function() pickPhoto;
 
   /// Injectable clock for tests. Production uses [DateTime.now].
   final DateTime Function() clock;
 
-  const RoundScreen({
+  // Cannot be `const` — the defaulting for `pickPhoto`/`clock` runs at
+  // construction time, which is non-const.
+  // ignore: prefer_const_constructors_in_immutables
+  RoundScreen({
     super.key,
     required this.repo,
+    required this.tags,
+    required this.embedder,
     required this.lobbyId,
     required this.currentUid,
+    Future<Uint8List?> Function()? pickPhoto,
     DateTime Function()? clock,
-  }) : clock = clock ?? DateTime.now;
+  })  : pickPhoto = pickPhoto ?? _defaultPickPhoto,
+        clock = clock ?? DateTime.now;
+
+  static Future<Uint8List?> _defaultPickPhoto() async {
+    // image_picker over a custom in-app camera preview is a deliberate v1
+    // trade-off: ~500ms hand-off latency for system camera, vs the much
+    // larger surface of CameraController + lifecycle management. Re-visit
+    // for v2 polish (an embedded viewfinder is what the plan describes).
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.camera,
+      preferredCameraDevice: CameraDevice.rear,
+      maxWidth: 1280,
+      maxHeight: 1280,
+    );
+    if (picked == null) return null;
+    return File(picked.path).readAsBytes();
+  }
 
   @override
   State<RoundScreen> createState() => _RoundScreenState();
@@ -36,6 +76,9 @@ class _RoundScreenState extends State<RoundScreen> {
   Lobby? _lobby;
   bool _endRequested = false;
   bool _resultsRouted = false;
+  bool _shooting = false;
+  _Toast? _toast;
+  Timer? _toastTimer;
 
   @override
   void initState() {
@@ -48,6 +91,7 @@ class _RoundScreenState extends State<RoundScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
+    _toastTimer?.cancel();
     super.dispose();
   }
 
@@ -100,6 +144,129 @@ class _RoundScreenState extends State<RoundScreen> {
     );
   }
 
+  Future<void> _onShutter() async {
+    if (_shooting) return;
+    if (_lobby?.status != LobbyStatus.active) return;
+    setState(() {
+      _shooting = true;
+      _toast = null;
+    });
+    try {
+      // The picker returns null when the user backs out of the camera
+      // sheet without taking a photo — silent no-op, no toast.
+      final bytes = await widget.pickPhoto();
+      if (bytes == null) {
+        if (!mounted) return;
+        setState(() => _shooting = false);
+        return;
+      }
+
+      Float32List? embedding;
+      try {
+        embedding = await widget.embedder.embed(bytes);
+      } on NoFaceDetectedException {
+        // Per §313: the client short-circuits to "no match" without
+        // calling submitTag — saves a Function invocation and the user
+        // gets faster feedback than a server round-trip.
+        _showToast(_Toast.localNoMatch());
+        if (!mounted) return;
+        setState(() => _shooting = false);
+        return;
+      }
+
+      final tagId = generateTagId();
+      final submission = await widget.tags.submitTag(
+        lobbyId: widget.lobbyId,
+        tagId: tagId,
+        embedding: embedding,
+        modelVersion: widget.embedder.modelVersion,
+      );
+
+      _showToast(_Toast.fromSubmission(
+        submission,
+        targetName: _displayNameOf(submission),
+      ));
+
+      if (submission.retainPhoto) {
+        // Fire-and-forget per §122 — verdict toast is the user-facing
+        // ack; the photo upload runs in the background. Errors are
+        // logged but don't surface to the player.
+        unawaited(
+          widget.tags
+              .uploadTagPhoto(
+                lobbyId: widget.lobbyId,
+                tagId: submission.tagId,
+                jpegBytes: bytes,
+              )
+              .catchError((Object e, StackTrace _) {
+            debugPrint('uploadTagPhoto failed (best-effort): $e');
+          }),
+        );
+      }
+    } on FirebaseFunctionsException catch (e) {
+      _showToast(_Toast.error(_friendlyFnError(e)));
+    } catch (e) {
+      _showToast(_Toast.error("Couldn't process that shot."));
+      debugPrint('RoundScreen shutter failure: $e');
+    } finally {
+      if (mounted) setState(() => _shooting = false);
+    }
+  }
+
+  String? _displayNameOf(TagSubmission s) {
+    // tagId on a hit verdict is enough to look up the victim, but the
+    // server doesn't echo back the victim uid by name and watchPlayers is
+    // the source of truth. We don't have the victim uid in the verdict
+    // (deliberately, to keep the response small), so the toast falls back
+    // to a generic "you hit someone" — the scoreboard reflects the lives
+    // change immediately. Improving this is a polish-PR item.
+    return null;
+  }
+
+  void _showToast(_Toast toast) {
+    _toastTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _toast = toast);
+    _toastTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      setState(() => _toast = null);
+    });
+  }
+
+  String _friendlyFnError(FirebaseFunctionsException e) {
+    // submitTag's documented errors. Anything else is a bug or a network
+    // outage — same generic message.
+    switch (e.code) {
+      case 'failed-precondition':
+        if (e.message?.contains('eliminated') ?? false) {
+          return "You're already eliminated.";
+        }
+        if (e.message?.contains('lobby status') ?? false) {
+          return 'Round is no longer active.';
+        }
+        return e.message ?? 'Could not submit tag.';
+      case 'permission-denied':
+        return "You're not in this lobby.";
+      case 'unauthenticated':
+        return 'Sign in expired — restart the app.';
+      default:
+        return 'Network hiccup. Try again.';
+    }
+  }
+
+  void _openScoreboard() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => ScoreboardSheet(
+        repo: widget.repo,
+        lobbyId: widget.lobbyId,
+        currentUid: widget.currentUid,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<Lobby?>(
@@ -142,19 +309,47 @@ class _RoundScreenState extends State<RoundScreen> {
           appBar: AppBar(
             title: const Text('Round in progress'),
             automaticallyImplyLeading: false,
+            actions: [
+              IconButton(
+                tooltip: 'Open scoreboard',
+                onPressed: _openScoreboard,
+                icon: const Icon(Icons.leaderboard_outlined),
+              ),
+            ],
           ),
-          body: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _Countdown(remaining: _remaining(lobby)),
-                const SizedBox(height: 24),
-                _AliveCount(repo: widget.repo, lobbyId: widget.lobbyId),
-                const Spacer(),
-                const _CameraPlaceholder(),
-                const SizedBox(height: 24),
-              ],
+          body: GestureDetector(
+            // Approximation of the §80 "swipe-up sheet" — drag up anywhere
+            // on the round surface opens the live scoreboard.
+            onVerticalDragEnd: (details) {
+              if ((details.primaryVelocity ?? 0) < -250) _openScoreboard();
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _Countdown(remaining: _remaining(lobby)),
+                  const SizedBox(height: 16),
+                  _TopBar(
+                    repo: widget.repo,
+                    lobbyId: widget.lobbyId,
+                    currentUid: widget.currentUid,
+                  ),
+                  const Spacer(),
+                  if (_toast != null) _ToastBanner(toast: _toast!),
+                  const SizedBox(height: 12),
+                  _ShutterButton(
+                    busy: _shooting,
+                    onPressed: _shooting ? null : _onShutter,
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _openScoreboard,
+                    icon: const Icon(Icons.keyboard_arrow_up),
+                    label: const Text('Scoreboard'),
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -185,10 +380,15 @@ class _Countdown extends StatelessWidget {
   }
 }
 
-class _AliveCount extends StatelessWidget {
+class _TopBar extends StatelessWidget {
   final LobbyRepository repo;
   final String lobbyId;
-  const _AliveCount({required this.repo, required this.lobbyId});
+  final String currentUid;
+  const _TopBar({
+    required this.repo,
+    required this.lobbyId,
+    required this.currentUid,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -196,16 +396,200 @@ class _AliveCount extends StatelessWidget {
       stream: repo.watchPlayers(lobbyId),
       builder: (context, snap) {
         final players = snap.data ?? const <LobbyPlayer>[];
-        final alive = players
-            .where((p) => p.status == LobbyPlayerStatus.alive)
+        final me = players.firstWhere(
+          (p) => p.uid == currentUid,
+          orElse: () => _missingPlayer,
+        );
+        final aliveOpponents = players
+            .where((p) => p.uid != currentUid && p.status == LobbyPlayerStatus.alive)
             .length;
-        return Center(
-          child: Text(
-            '$alive of ${players.length} still alive',
-            style: const TextStyle(fontSize: 16),
-          ),
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _Stat(
+              icon: Icons.favorite,
+              label: 'Lives',
+              value: me.livesRemaining.toString(),
+              eliminated: me.status == LobbyPlayerStatus.eliminated,
+            ),
+            _Stat(
+              icon: Icons.person_outline,
+              label: 'Opponents',
+              value: aliveOpponents.toString(),
+            ),
+          ],
         );
       },
+    );
+  }
+
+  static final _missingPlayer = LobbyPlayer(
+    uid: '__missing__',
+    displayName: '',
+    livesRemaining: 0,
+    status: LobbyPlayerStatus.alive,
+    joinedAt: DateTime.fromMillisecondsSinceEpoch(0),
+    embeddingSnapshot: Float32List(0),
+    embeddingModelVersion: '',
+  );
+}
+
+class _Stat extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool eliminated;
+  const _Stat({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.eliminated = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          icon,
+          color: eliminated ? Theme.of(context).disabledColor : null,
+        ),
+        const SizedBox(width: 8),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            Text(
+              eliminated ? 'OUT' : value,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ShutterButton extends StatelessWidget {
+  final bool busy;
+  final VoidCallback? onPressed;
+  const _ShutterButton({required this.busy, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SizedBox(
+        width: 96,
+        height: 96,
+        child: FilledButton(
+          onPressed: onPressed,
+          style: FilledButton.styleFrom(
+            shape: const CircleBorder(),
+            padding: EdgeInsets.zero,
+          ),
+          child: busy
+              ? const SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation(Colors.white),
+                  ),
+                )
+              : const Icon(Icons.camera_alt, size: 36),
+        ),
+      ),
+    );
+  }
+}
+
+class _Toast {
+  final String message;
+  final _ToastKind kind;
+  const _Toast._(this.message, this.kind);
+
+  factory _Toast.fromSubmission(TagSubmission s, {String? targetName}) {
+    switch (s.result) {
+      case TagResult.hit:
+        final lives = s.victimLivesRemaining;
+        final eliminated = s.eliminated ?? false;
+        if (eliminated) {
+          return _Toast._('You eliminated your target!', _ToastKind.success);
+        }
+        if (lives != null) {
+          return _Toast._(
+            targetName == null
+                ? 'Hit! Target has $lives ${lives == 1 ? "life" : "lives"} left.'
+                : 'You hit $targetName. ${lives == 1 ? "1 life" : "$lives lives"} left.',
+            _ToastKind.success,
+          );
+        }
+        return _Toast._('Hit!', _ToastKind.success);
+      case TagResult.noMatch:
+        return const _Toast._('No match. (Cooldown 5s)', _ToastKind.warning);
+      case TagResult.immune:
+        return const _Toast._('Target is immune. Try again soon.', _ToastKind.warning);
+      case TagResult.cooldown:
+        return const _Toast._('Slow down — cooldown active.', _ToastKind.warning);
+    }
+  }
+
+  factory _Toast.localNoMatch() =>
+      const _Toast._('No face detected — try better lighting.', _ToastKind.warning);
+
+  factory _Toast.error(String message) =>
+      _Toast._(message, _ToastKind.error);
+}
+
+enum _ToastKind { success, warning, error }
+
+class _ToastBanner extends StatelessWidget {
+  final _Toast toast;
+  const _ToastBanner({required this.toast});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    Color background;
+    IconData icon;
+    switch (toast.kind) {
+      case _ToastKind.success:
+        background = Colors.green.shade100;
+        icon = Icons.check_circle_outline;
+        break;
+      case _ToastKind.warning:
+        background = theme.colorScheme.surfaceContainerHighest;
+        icon = Icons.info_outline;
+        break;
+      case _ToastKind.error:
+        background = theme.colorScheme.errorContainer;
+        icon = Icons.error_outline;
+        break;
+    }
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(icon),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              toast.message,
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -248,41 +632,6 @@ class _RoundUnavailable extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _CameraPlaceholder extends StatelessWidget {
-  const _CameraPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    // The shutter / capture UI lands in Phase 2 (§326). For Phase 1 the
-    // round screen exists so we can validate the timer + end-of-round
-    // transition independently — keeping these phases separate so the
-    // tag mechanic doesn't slip into the "lobby lifecycle" PR.
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: const Column(
-        children: [
-          Icon(Icons.photo_camera_outlined, size: 40),
-          SizedBox(height: 12),
-          Text(
-            'Camera shutter coming in Phase 2.',
-            textAlign: TextAlign.center,
-          ),
-          SizedBox(height: 4),
-          Text(
-            'For now the round just runs out the clock.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: Colors.black54),
-          ),
-        ],
       ),
     );
   }

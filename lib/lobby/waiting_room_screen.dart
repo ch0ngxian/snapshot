@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../face/face_embedder.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
 import '../services/lobby_repository.dart';
+import '../services/tag_repository.dart';
 import 'round_screen.dart';
 import 'rules_editor.dart';
 
@@ -15,12 +17,16 @@ import 'rules_editor.dart';
 /// [RoundScreen] when the lobby flips to `active`.
 class WaitingRoomScreen extends StatefulWidget {
   final LobbyRepository repo;
+  final TagRepository tags;
+  final FaceEmbedder embedder;
   final String lobbyId;
   final String currentUid;
 
   const WaitingRoomScreen({
     super.key,
     required this.repo,
+    required this.tags,
+    required this.embedder,
     required this.lobbyId,
     required this.currentUid,
   });
@@ -67,6 +73,8 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
       MaterialPageRoute(
         builder: (_) => RoundScreen(
           repo: widget.repo,
+          tags: widget.tags,
+          embedder: widget.embedder,
           lobbyId: widget.lobbyId,
           currentUid: widget.currentUid,
         ),
