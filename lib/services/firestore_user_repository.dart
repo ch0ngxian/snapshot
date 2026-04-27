@@ -49,4 +49,13 @@ class FirestoreUserRepository implements UserRepository {
       'createdAt': Timestamp.fromDate(profile.createdAt),
     });
   }
+
+  @override
+  Future<void> setFcmToken(String uid, String token) async {
+    // `update` (not `set` with merge) so the rules engine's
+    // `affectedKeys().hasOnly(['fcmToken'])` check sees a clean single-field
+    // diff — a `set(..., merge: true)` re-emits unchanged fields and would
+    // accidentally trip the onboarding-rewrite branch.
+    await _users.doc(uid).update({'fcmToken': token});
+  }
 }

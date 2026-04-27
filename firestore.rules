@@ -16,11 +16,14 @@ service cloud.firestore {
     }
 
     function isValidUserProfile(data) {
+      // `fcmToken` is optional and written separately after onboarding by
+      // the FCM registrar; everything else is set at onboarding time.
       return data.keys().hasOnly([
           'displayName',
           'faceEmbedding',
           'embeddingModelVersion',
           'createdAt',
+          'fcmToken',
         ])
         && data.displayName is string
         && data.displayName.size() > 0
@@ -29,7 +32,21 @@ service cloud.firestore {
         && data.faceEmbedding.size() == 128
         && data.embeddingModelVersion is string
         && data.embeddingModelVersion.size() > 0
-        && data.createdAt is timestamp;
+        && data.createdAt is timestamp
+        && (!('fcmToken' in data.keys())
+            || (data.fcmToken is string
+                && data.fcmToken.size() > 0
+                && data.fcmToken.size() <= 4096));
+    }
+
+    function isValidFcmTokenUpdate(after, before) {
+      // Allow the owner to update only `fcmToken` after onboarding (Phase 2 —
+      // see lib/services/fcm_registrar.dart). The diff must touch nothing
+      // else — onboarding fields are immutable from the client once set.
+      return after.diff(before).affectedKeys().hasOnly(['fcmToken'])
+        && after.fcmToken is string
+        && after.fcmToken.size() > 0
+        && after.fcmToken.size() <= 4096;
     }
 
     // users/{uid}: a player's profile, including their face embedding.
@@ -39,9 +56,15 @@ service cloud.firestore {
     // Schema mirrors lib/models/user_profile.dart — bump both together.
     match /users/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if request.auth != null
+      allow create: if request.auth != null
         && request.auth.uid == uid
         && isValidUserProfile(request.resource.data);
+      // Update path covers both onboarding rewrite (full profile) and the
+      // post-onboarding fcmToken refresh (single-field update).
+      allow update: if request.auth != null
+        && request.auth.uid == uid
+        && (isValidUserProfile(request.resource.data)
+            || isValidFcmTokenUpdate(request.resource.data, resource.data));
     }
 
     // lobbies/{lobbyId}: the round-level state doc. Readable by anyone who
