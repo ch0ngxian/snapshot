@@ -18,6 +18,11 @@ dependencies:
   firebase_auth: ^5.3.0          # anonymous auth (§2 onboarding)
   cloud_firestore: ^5.4.0        # users/{uid} profile + future lobby state
   firebase_storage: ^12.3.0      # selfie thumbs + borderline tag photos (§5.9)
+  cloud_functions: ^5.1.0        # createLobby / joinLobby callables (§5.4)
+
+  # Lobby flow (per tech-plan §5.3)
+  qr_flutter: ^4.1.0                     # render the join QR (host waiting room)
+  mobile_scanner: ^5.2.0                 # scan the join QR (joiner flow)
 
   # Face pipeline (per tech-plan.md §5.7)
   google_mlkit_face_detection: ^0.13.0  # detect & crop largest face
