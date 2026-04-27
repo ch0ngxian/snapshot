@@ -4,8 +4,14 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'package:image_picker/image_picker.dart';
+
+import 'dart:io';
+
+import 'face/cosine_similarity.dart';
 import 'face/face_embedder.dart';
 import 'face/mobilefacenet_embedder.dart';
+import 'face/no_face_detected_exception.dart';
 import 'firebase_options.dart';
 import 'models/user_profile.dart';
 import 'onboarding/onboarding_flow.dart';
@@ -126,7 +132,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
               onComplete: _onOnboardingComplete,
             );
           }
-          return _Home(profile: profile);
+          return _Home(profile: profile, embedder: widget.embedder);
         },
       ),
     );
@@ -185,12 +191,75 @@ class _BootError extends StatelessWidget {
 }
 
 /// Phase 0 placeholder home. Lobby UI lands in Phase 1.
-class _Home extends StatelessWidget {
+///
+/// Includes a "Re-scan & compare" panel for the §314 sanity check: confirm
+/// the embedder discriminates (same face → high cosine, different → low) and
+/// eyeball pipeline latency. Real §314 gate runs on a low-end Android.
+class _Home extends StatefulWidget {
   final UserProfile profile;
-  const _Home({required this.profile});
+  final FaceEmbedder embedder;
+  const _Home({required this.profile, required this.embedder});
+
+  @override
+  State<_Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<_Home> {
+  bool _verifying = false;
+  double? _cosine;
+  int? _elapsedMs;
+  String? _error;
+
+  Future<void> _rescan() async {
+    setState(() {
+      _verifying = true;
+      _cosine = null;
+      _elapsedMs = null;
+      _error = null;
+    });
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.front,
+        maxWidth: 1280,
+        maxHeight: 1280,
+      );
+      if (picked == null) {
+        setState(() => _verifying = false);
+        return;
+      }
+      final bytes = await File(picked.path).readAsBytes();
+      final stopwatch = Stopwatch()..start();
+      final newEmbedding = await widget.embedder.embed(bytes);
+      stopwatch.stop();
+      final cosine = cosineSimilarity(
+        widget.profile.faceEmbedding,
+        newEmbedding,
+      );
+      if (!mounted) return;
+      setState(() {
+        _verifying = false;
+        _cosine = cosine;
+        _elapsedMs = stopwatch.elapsedMilliseconds;
+      });
+    } on NoFaceDetectedException {
+      if (!mounted) return;
+      setState(() {
+        _verifying = false;
+        _error = "No face detected — try better lighting.";
+      });
+    } catch (err) {
+      if (!mounted) return;
+      setState(() {
+        _verifying = false;
+        _error = 'Failed: $err';
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final profile = widget.profile;
     return Scaffold(
       appBar: AppBar(title: Text('Hi, ${profile.displayName}')),
       body: Padding(
@@ -206,6 +275,37 @@ class _Home extends StatelessWidget {
             Text('uid: ${profile.uid}'),
             Text('embedding model: ${profile.embeddingModelVersion}'),
             Text('embedding dim: ${profile.faceEmbedding.length}'),
+            const Divider(height: 32),
+            const Text(
+              'Verify face recognition (§314 sanity)',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Same face → cosine ≳ 0.7. Different face → cosine ≲ 0.4. '
+              'Production threshold is 0.65.',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _verifying ? null : _rescan,
+              icon: const Icon(Icons.refresh),
+              label: Text(_verifying ? 'Scanning…' : 'Re-scan & compare'),
+            ),
+            if (_cosine != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                'cosine: ${_cosine!.toStringAsFixed(3)}    '
+                'embed pipeline: ${_elapsedMs}ms',
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
             const SizedBox(height: 24),
             const Text(
               'Lobby UI lands in Phase 1.',
