@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Rect;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -59,15 +60,34 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
 
   @override
   Future<Float32List> embed(Uint8List imageBytes) async {
-    final face = await _detectLargestFace(imageBytes);
+    // image_picker's camera path on iOS writes JPEGs with raw camera-orientation
+    // pixels and an EXIF orientation tag. ML Kit doesn't always honor the tag,
+    // and `img.decodeImage` never does — so detection silently fails on
+    // portrait selfies, or succeeds with a bounding box that doesn't line up
+    // with our crop. Bake orientation once up front and feed the same upright
+    // pixels to both stages.
+    final sw = Stopwatch()..start();
 
     final decoded = img.decodeImage(imageBytes);
     if (decoded == null) {
       throw ArgumentError('could not decode image bytes');
     }
+    final tDecode = sw.elapsedMilliseconds;
 
-    final resized = _cropAndResize(decoded, face.boundingBox);
+    final upright = img.bakeOrientation(decoded);
+    final tBake = sw.elapsedMilliseconds - tDecode;
+
+    final uprightJpeg = Uint8List.fromList(img.encodeJpg(upright));
+    final tEncode = sw.elapsedMilliseconds - tDecode - tBake;
+
+    final face = await _detectLargestFace(uprightJpeg);
+    final tDetect =
+        sw.elapsedMilliseconds - tDecode - tBake - tEncode;
+
+    final resized = _cropAndResize(upright, face.boundingBox);
     final input = _toNHWCFloat32(resized);
+    final tCropAndConvert =
+        sw.elapsedMilliseconds - tDecode - tBake - tEncode - tDetect;
 
     final output = List.generate(
       1,
@@ -77,8 +97,24 @@ class MobileFaceNetEmbedder implements FaceEmbedder {
       input.reshape([1, _inputSize, _inputSize, 3]),
       output,
     );
+    final tInfer = sw.elapsedMilliseconds -
+        tDecode - tBake - tEncode - tDetect - tCropAndConvert;
 
-    return _l2Normalize(Float32List.fromList(output[0]));
+    final normalized = _l2Normalize(Float32List.fromList(output[0]));
+
+    // Wrapped in `assert` so the log + string interpolation are stripped
+    // entirely in release/profile — `debugPrint` itself runs in release.
+    assert(() {
+      debugPrint(
+        '[embed] ${sw.elapsedMilliseconds}ms total — '
+        'decode=$tDecode bake=$tBake encodeJpg=$tEncode '
+        'detect=$tDetect crop+nhwc=$tCropAndConvert infer=$tInfer '
+        '(input ${decoded.width}x${decoded.height})',
+      );
+      return true;
+    }());
+
+    return normalized;
   }
 
   Future<Face> _detectLargestFace(Uint8List imageBytes) async {
