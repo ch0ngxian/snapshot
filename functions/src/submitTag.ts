@@ -73,28 +73,45 @@ export const submitTag = onCall(
     const lobbyRef = db.collection("lobbies").doc(lobbyId);
     const tagRef = lobbyRef.collection("tags").doc(tagId);
 
-    // Run the idempotency probe in parallel with the RC threshold fetch —
-    // the RC load is 60s-cached so this only matters on instance cold start,
-    // but it's free symmetry. Validate caller owns the tagId; otherwise a
-    // malicious client could probe other players' tag outcomes by guessing
-    // tagIds.
-    const [existingTag, { threshold, halfWidth }] = await Promise.all([
-      tagRef.get(),
-      loadTagThresholds(),
-    ]);
-    if (existingTag.exists) {
-      const data = existingTag.data() as Record<string, unknown>;
-      if (data.taggerUid !== callerUid) {
-        throw new HttpsError(
-          "permission-denied",
-          "tagId belongs to a different caller",
-        );
-      }
-      return replayVerdict(data, tagId);
-    }
+    // RC is a separate datastore so its read stays outside the Firestore
+    // transaction. The idempotency probe MUST live inside the tx — between
+    // an outside-tx probe and the tx commit, another invocation with the
+    // same tagId could create the doc and the second `tx.set(tagRef, …)`
+    // would silently overwrite a verdict (and bypass the
+    // "tagId belongs to a different caller" check).
+    const { threshold, halfWidth } = await loadTagThresholds();
 
-    const txOutcome = await db.runTransaction(async (tx) => {
-      const lobbySnap = await tx.get(lobbyRef);
+    type ReplayResult = { kind: "replay"; out: SubmitTagResult };
+    type FreshResult = {
+      kind: "fresh";
+      result: SubmitTagResultKind;
+      retainPhoto: boolean;
+      victimUid?: string;
+      victimLivesRemaining?: number;
+      eliminated?: boolean;
+    };
+
+    const txOutcome: ReplayResult | FreshResult = await db.runTransaction(
+      async (tx) => {
+      const [existingTag, lobbySnap] = await Promise.all([
+        tx.get(tagRef),
+        tx.get(lobbyRef),
+      ]);
+
+      if (existingTag.exists) {
+        const data = existingTag.data() as Record<string, unknown>;
+        if (data.taggerUid !== callerUid) {
+          throw new HttpsError(
+            "permission-denied",
+            "tagId belongs to a different caller",
+          );
+        }
+        return {
+          kind: "replay" as const,
+          out: replayVerdict(data, tagId),
+        };
+      }
+
       if (!lobbySnap.exists) {
         throw new HttpsError("not-found", "lobby does not exist");
       }
@@ -154,9 +171,11 @@ export const submitTag = onCall(
         };
         tx.set(tagRef, tagDoc);
         // Do not bump lastTagAttemptAt on cooldown — that would extend the
-        // window indefinitely if a client hammers the shutter. Cooldown is
-        // measured against the prior accepted attempt.
+        // window indefinitely if a client hammers the shutter. The window
+        // is measured against the prior non-cooldown attempt (per §126 the
+        // throttle is on shutter spam, not on accepted hits specifically).
         return {
+          kind: "fresh" as const,
           result: "cooldown" as const,
           retainPhoto: false,
         };
@@ -166,6 +185,17 @@ export const submitTag = onCall(
         lobbyRef.collection("players").where("status", "==", "alive"),
       );
 
+      // True alive-opponent count, ignoring whether each player has a
+      // matchable embedding. Drives end-round detection — a player with a
+      // corrupt or missing snapshot is still alive even though they can't
+      // be ranked or tagged this round.
+      const aliveOpponentCount = aliveSnap.docs.filter(
+        (d) => d.id !== callerUid,
+      ).length;
+
+      // Rankable opponents — those whose embedding can actually be scored
+      // against the caller's. The length filter inside `rankByCosine`
+      // would otherwise hide a corrupt-snapshot player by skipping them.
       const opponents: PlayerSnapshot[] = aliveSnap.docs
         .filter((d) => d.id !== callerUid)
         .map((d) => {
@@ -208,7 +238,11 @@ export const submitTag = onCall(
         tx.update(callerRef, {
           lastTagAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-        return { result: "no_match" as const, retainPhoto: false };
+        return {
+          kind: "fresh" as const,
+          result: "no_match" as const,
+          retainPhoto: false,
+        };
       }
 
       // Immunity check on the top-match's lastTaggedAt.
@@ -238,7 +272,11 @@ export const submitTag = onCall(
         tx.update(callerRef, {
           lastTagAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-        return { result: "immune" as const, retainPhoto: false };
+        return {
+          kind: "fresh" as const,
+          result: "immune" as const,
+          retainPhoto: false,
+        };
       }
 
       if (!passesThreshold) {
@@ -255,7 +293,11 @@ export const submitTag = onCall(
         tx.update(callerRef, {
           lastTagAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-        return { result: "no_match" as const, retainPhoto };
+        return {
+          kind: "fresh" as const,
+          result: "no_match" as const,
+          retainPhoto,
+        };
       }
 
       // Hit. Decrement victim lives, eliminate at 0, end round if only
@@ -287,10 +329,11 @@ export const submitTag = onCall(
       };
       tx.set(tagRef, tagDoc);
 
-      // End round when ≤1 alive remains. opponents.length is the
-      // alive-opponent count BEFORE elimination; if eliminating one drops
-      // it to 0, only the tagger is alive.
-      if (eliminated && opponents.length <= 1) {
+      // End round when only the tagger is left alive. aliveOpponentCount
+      // is pre-elimination and includes players with corrupt embeddings
+      // (still alive even if not rankable this round); subtracting the
+      // one we just eliminated gives the post-tag alive-opponent count.
+      if (eliminated && aliveOpponentCount - 1 <= 0) {
         tx.update(lobbyRef, {
           status: "ended",
           endedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -298,22 +341,38 @@ export const submitTag = onCall(
       }
 
       return {
+        kind: "fresh" as const,
         result: "hit" as const,
         retainPhoto,
         victimUid: topMatch.player.uid,
         victimLivesRemaining: newLives,
         eliminated,
       };
-    });
+    },
+    );
+
+    // Idempotent replay short-circuits — the persisted verdict already
+    // reflects the original FCM emit and victim writes, so we just hand
+    // back the stored response.
+    if (txOutcome.kind === "replay") {
+      logger.info("submitTag replay", {
+        lobbyId,
+        tagId,
+        callerUid,
+        result: txOutcome.out.result,
+      });
+      return txOutcome.out;
+    }
 
     // Best-effort FCM after the transaction commits. Skipped silently when
     // no token is registered for the victim yet (client registration lands
     // in PR-B alongside the round UI).
-    if (txOutcome.result === "hit" && "victimUid" in txOutcome) {
-      await sendTagPush(callerUid, txOutcome.victimUid as string).catch((err) =>
+    if (txOutcome.result === "hit" && txOutcome.victimUid) {
+      const victimUid = txOutcome.victimUid;
+      await sendTagPush(callerUid, victimUid).catch((err) =>
         logger.warn("submitTag: FCM emit failed", {
           error: (err as Error).message,
-          victimUid: (txOutcome as { victimUid: string }).victimUid,
+          victimUid,
         }),
       );
     }
@@ -331,11 +390,11 @@ export const submitTag = onCall(
       retainPhoto: txOutcome.retainPhoto,
       tagId,
     };
-    if ("victimLivesRemaining" in txOutcome) {
-      out.victimLivesRemaining = txOutcome.victimLivesRemaining as number;
+    if (txOutcome.victimLivesRemaining !== undefined) {
+      out.victimLivesRemaining = txOutcome.victimLivesRemaining;
     }
-    if ("eliminated" in txOutcome) {
-      out.eliminated = txOutcome.eliminated as boolean;
+    if (txOutcome.eliminated !== undefined) {
+      out.eliminated = txOutcome.eliminated;
     }
     return out;
   },

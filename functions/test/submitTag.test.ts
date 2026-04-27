@@ -482,6 +482,27 @@ describe("submitTag — verdicts", () => {
     );
   });
 
+  test("end-round count ignores embedding-length filter (corrupt snapshot still counts as alive)", async () => {
+    // Two alive opponents — one with a corrupt (non-128) embedding that
+    // gets filtered out of ranking. The corrupt-snapshot player is still
+    // alive, so eliminating the matching one must NOT end the round.
+    setAliveOpponents([
+      { uid: "victim", data: { status: "alive", embeddingSnapshot: v128(0), livesRemaining: 1 } },
+      {
+        uid: "ghost",
+        data: {
+          status: "alive",
+          embeddingSnapshot: [0, 1, 2], // wrong length — unrankable
+          livesRemaining: 3,
+        },
+      },
+    ]);
+    await handler(buildReq("tagger", baseInput()));
+    expect(lobbyUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "ended" }),
+    );
+  });
+
   test("retainPhoto: borderline band returns true", async () => {
     // Cosine ~ identical vectors; threshold 0.65 + halfWidth 0.10 → keep.
     // We tune RC threshold to exactly the cosine score so |sim - threshold| = 0.
