@@ -66,7 +66,7 @@ class InMemoryLobbyRepository implements LobbyRepository {
       rules: LobbyRules.defaults,
       createdAt: DateTime.now(),
     );
-    final hostPlayer = _playerFor(currentUid, profile);
+    final hostPlayer = _playerFor(currentUid, profile, lobby.rules.startingLives);
     _lobbies[lobbyId] = _LobbyState(lobby: lobby, players: {currentUid: hostPlayer});
     _emitLobby(lobbyId);
     _emitPlayers(lobbyId);
@@ -90,9 +90,106 @@ class InMemoryLobbyRepository implements LobbyRepository {
     if (profile == null) {
       throw StateError('no profile registered for $currentUid');
     }
-    state.players[currentUid] = _playerFor(currentUid, profile);
+    state.players[currentUid] = _playerFor(currentUid, profile, state.lobby.rules.startingLives);
     _emitPlayers(state.lobby.lobbyId);
     return state.lobby.lobbyId;
+  }
+
+  @override
+  Future<void> startRound(String lobbyId, LobbyRules rules) async {
+    final state = _lobbies[lobbyId];
+    if (state == null) {
+      throw StateError('lobby $lobbyId not found');
+    }
+    if (state.lobby.hostUid != currentUid) {
+      throw StateError('only the host can start the round');
+    }
+    if (state.lobby.status != LobbyStatus.waiting) {
+      throw StateError('lobby is ${state.lobby.status.name}');
+    }
+    if (state.players.length < 2) {
+      throw StateError('need at least 2 players');
+    }
+    // Reset livesRemaining in case the host changed startingLives — mirrors
+    // the server-side startRound transaction.
+    state.players.updateAll(
+      (uid, p) => LobbyPlayer(
+        uid: p.uid,
+        displayName: p.displayName,
+        livesRemaining: rules.startingLives,
+        status: p.status,
+        joinedAt: p.joinedAt,
+        embeddingSnapshot: p.embeddingSnapshot,
+        embeddingModelVersion: p.embeddingModelVersion,
+      ),
+    );
+    _lobbies[lobbyId] = _LobbyState(
+      lobby: Lobby(
+        lobbyId: state.lobby.lobbyId,
+        code: state.lobby.code,
+        hostUid: state.lobby.hostUid,
+        status: LobbyStatus.active,
+        rules: rules,
+        createdAt: state.lobby.createdAt,
+        startedAt: DateTime.now(),
+      ),
+      players: state.players,
+    );
+    _emitLobby(lobbyId);
+    _emitPlayers(lobbyId);
+  }
+
+  @override
+  Future<void> endRound(String lobbyId) async {
+    final state = _lobbies[lobbyId];
+    if (state == null) {
+      throw StateError('lobby $lobbyId not found');
+    }
+    if (!state.players.containsKey(currentUid)) {
+      throw StateError('not a player in this lobby');
+    }
+    if (state.lobby.status == LobbyStatus.ended) {
+      return;
+    }
+    if (state.lobby.status != LobbyStatus.active) {
+      throw StateError('lobby is ${state.lobby.status.name}');
+    }
+    _lobbies[lobbyId] = _LobbyState(
+      lobby: Lobby(
+        lobbyId: state.lobby.lobbyId,
+        code: state.lobby.code,
+        hostUid: state.lobby.hostUid,
+        status: LobbyStatus.ended,
+        rules: state.lobby.rules,
+        createdAt: state.lobby.createdAt,
+        startedAt: state.lobby.startedAt,
+        endedAt: DateTime.now(),
+      ),
+      players: state.players,
+    );
+    _emitLobby(lobbyId);
+  }
+
+  /// Test-only: backdate `startedAt` so [RoundScreen] tests can drive the
+  /// timer past expiry without actually waiting. Real Firestore writes
+  /// `startedAt` via `serverTimestamp()`.
+  void debugForceStartedAt(String lobbyId, DateTime startedAt) {
+    final state = _lobbies[lobbyId];
+    if (state == null) return;
+    _lobbies[lobbyId] = _LobbyState(
+      lobby: Lobby(
+        lobbyId: state.lobby.lobbyId,
+        code: state.lobby.code,
+        hostUid: state.lobby.hostUid,
+        status: state.lobby.status,
+        rules: state.lobby.rules,
+        createdAt: state.lobby.createdAt,
+        startedAt: startedAt,
+        endedAt: state.lobby.endedAt,
+      ),
+      players: state.players,
+    );
+    _emitLobby(lobbyId);
   }
 
   @override
@@ -142,10 +239,11 @@ class InMemoryLobbyRepository implements LobbyRepository {
     );
   }
 
-  LobbyPlayer _playerFor(String uid, _Profile profile) => LobbyPlayer(
+  LobbyPlayer _playerFor(String uid, _Profile profile, int startingLives) =>
+      LobbyPlayer(
         uid: uid,
         displayName: profile.displayName,
-        livesRemaining: LobbyRules.defaults.startingLives,
+        livesRemaining: startingLives,
         status: LobbyPlayerStatus.alive,
         joinedAt: DateTime.now(),
         embeddingSnapshot: profile.embedding,
