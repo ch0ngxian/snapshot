@@ -130,11 +130,12 @@ class _RoundScreenState extends State<RoundScreen>
     _ticker?.cancel();
     _toastTimer?.cancel();
     unawaited(_camera.dispose());
-    SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    // Drop the round's portrait-only constraint. Flutter has no
+    // getPreferredOrientations() to mirror, so we restore the framework
+    // default — every orientation — and let the platform-level policy
+    // (iOS UISupportedInterfaceOrientations + Android android:screenOrientation)
+    // narrow it back from there.
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     super.dispose();
   }
 
@@ -557,16 +558,20 @@ class _ViewfinderBackdrop extends StatelessWidget {
     // FittedBox(BoxFit.cover) keeps the preview filling the screen even
     // when the camera's native aspect ratio is squarer/taller than the
     // device — overflow is hidden behind the HUD instead of letterboxed.
+    // The SizedBox uses the camera's *real* aspect ratio (queried from
+    // the controller via `previewAspectRatio`) as a `width / height`
+    // pair so cover-scaling crops correctly instead of distorting
+    // against an arbitrary box. The numeric extents are irrelevant —
+    // FittedBox rescales — only their ratio matters. AspectRatio can't
+    // be used directly here because FittedBox hands its child unbounded
+    // constraints, which AspectRatio rejects.
     return ClipRect(
       child: SizedBox.expand(
         child: FittedBox(
           fit: BoxFit.cover,
           child: SizedBox(
-            // Padding the preview to a known box gives FittedBox a
-            // sensible aspect-ratio cue. The actual size is irrelevant
-            // — FittedBox rescales — but we need *some* finite extent.
-            width: 100,
-            height: 160,
+            width: camera.previewAspectRatio,
+            height: 1.0,
             child: camera.previewWidget(context),
           ),
         ),
@@ -800,40 +805,56 @@ class _ShutterButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final disabled = onPressed == null;
-    return GestureDetector(
-      onTap: onPressed,
-      child: Container(
-        width: 88,
-        height: 88,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          // Outer ring + inner disc — classic shutter affordance, sized
-          // big enough to thumb-tap without looking. The cooldown ring
-          // (step 2) will replace the static outer border.
-          color: Colors.transparent,
-          border: Border.all(
-            color: disabled ? Colors.white24 : Colors.white,
-            width: 4,
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(6),
+    // Wrapped with Semantics(button: true) so screen readers announce
+    // it as a button with the right enabled/disabled state, and with
+    // Material+InkResponse so it gets standard ripple feedback on tap
+    // — both are missing from a bare GestureDetector + Container.
+    return Semantics(
+      button: true,
+      enabled: !disabled,
+      label: 'Shutter',
+      child: Material(
+        type: MaterialType.transparency,
+        shape: const CircleBorder(),
+        child: InkResponse(
+          onTap: onPressed,
+          containedInkWell: true,
+          customBorder: const CircleBorder(),
+          radius: 44,
           child: Container(
+            width: 88,
+            height: 88,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: disabled
-                  ? Colors.white24
-                  : (busy ? Colors.white70 : Colors.white),
+              // Outer ring + inner disc — classic shutter affordance, sized
+              // big enough to thumb-tap without looking. The cooldown ring
+              // (step 2) will replace the static outer border.
+              color: Colors.transparent,
+              border: Border.all(
+                color: disabled ? Colors.white24 : Colors.white,
+                width: 4,
+              ),
             ),
-            child: busy
-                ? const Padding(
-                    padding: EdgeInsets.all(20),
-                    child: CircularProgressIndicator(
-                      strokeWidth: 3,
-                      valueColor: AlwaysStoppedAnimation(Colors.black54),
-                    ),
-                  )
-                : null,
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: disabled
+                      ? Colors.white24
+                      : (busy ? Colors.white70 : Colors.white),
+                ),
+                child: busy
+                    ? const Padding(
+                        padding: EdgeInsets.all(20),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          valueColor: AlwaysStoppedAnimation(Colors.black54),
+                        ),
+                      )
+                    : null,
+              ),
+            ),
           ),
         ),
       ),

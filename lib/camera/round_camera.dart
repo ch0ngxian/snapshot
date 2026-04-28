@@ -25,6 +25,13 @@ abstract class RoundCamera {
   /// underlying controller is ready to render a preview / capture.
   bool get isInitialized;
 
+  /// Aspect ratio (`width / height`) of the live preview, used by the
+  /// screen to pick a correctly-shaped box for `FittedBox(BoxFit.cover)`
+  /// so the preview crops cleanly instead of being scaled against an
+  /// arbitrary ratio. Returns a sensible portrait default (e.g. `9/16`)
+  /// when the camera isn't initialized yet.
+  double get previewAspectRatio;
+
   /// Capture the current frame and return JPEG bytes, or `null` if the
   /// camera isn't ready (e.g. paused, mid-init, disposed). Errors from
   /// the platform layer are rethrown — the caller decides whether to
@@ -89,6 +96,18 @@ class PackageCameraRoundCamera implements RoundCamera {
   bool get isInitialized => _initialized && !_disposed;
 
   @override
+  double get previewAspectRatio {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) {
+      // Portrait fallback while the controller is still spinning up —
+      // matches the orientation lock and avoids a one-frame square box
+      // that snaps to the real ratio mid-mount.
+      return 9 / 16;
+    }
+    return controller.value.aspectRatio;
+  }
+
+  @override
   Future<void> initialize() {
     if (_disposed) {
       throw StateError('PackageCameraRoundCamera used after dispose().');
@@ -127,7 +146,21 @@ class PackageCameraRoundCamera implements RoundCamera {
     if (!controller.value.isInitialized) return null;
     if (controller.value.isTakingPicture) return null;
     final XFile shot = await controller.takePicture();
-    return File(shot.path).readAsBytes();
+    // takePicture() drops a JPEG into the platform tmp/Documents dir.
+    // Over a 5-min round at one shot/sec that's ~hundreds of files left
+    // behind — storage bloat AND a privacy footnote since the photo
+    // policy says only borderline tags are retained. Read the bytes
+    // and delete the file best-effort. Non-fatal if delete fails.
+    final file = File(shot.path);
+    try {
+      return await file.readAsBytes();
+    } finally {
+      try {
+        await file.delete();
+      } catch (e, st) {
+        debugPrint('PackageCameraRoundCamera capture cleanup failed: $e\n$st');
+      }
+    }
   }
 
   @override

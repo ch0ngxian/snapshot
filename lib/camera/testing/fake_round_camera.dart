@@ -32,6 +32,11 @@ class FakeRoundCamera implements RoundCamera {
   @override
   bool get isInitialized => _initialized && !_disposed;
 
+  /// Tests can override this if they want to assert on layout against
+  /// a different shape; defaults to a typical portrait phone preview.
+  @override
+  double previewAspectRatio = 9 / 16;
+
   @override
   Future<void> initialize() async {
     initializeCalls++;
