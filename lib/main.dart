@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import 'camera/round_camera.dart';
 import 'face/cosine_similarity.dart';
 import 'face/face_embedder.dart';
+import 'face/face_tracker.dart';
 import 'face/mobilefacenet_embedder.dart';
 import 'face/no_face_detected_exception.dart';
 import 'firebase_options.dart';
@@ -88,6 +89,9 @@ class SnapshotApp extends StatefulWidget {
   // package:camera-backed implementation; widget tests inject a fake
   // so they don't need a live platform channel.
   final RoundCamera Function()? cameraFactory;
+  // Optional override for the live face tracker. Defaults to the
+  // ML-Kit-backed [MlKitFaceTracker]; widget tests inject a fake.
+  final FaceTracker Function(RoundCamera)? faceTrackerFactory;
 
   const SnapshotApp({
     super.key,
@@ -100,6 +104,7 @@ class SnapshotApp extends StatefulWidget {
     required this.activeLobbies,
     required this.buildTagPushListener,
     this.cameraFactory,
+    this.faceTrackerFactory,
   });
 
   @override
@@ -228,6 +233,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
               lobbyId: resume.lobbyId,
               currentUid: profile.uid,
               cameraFactory: widget.cameraFactory,
+              faceTrackerFactory: widget.faceTrackerFactory,
             ),
           ));
           break;
@@ -241,6 +247,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
               lobbyId: resume.lobbyId,
               currentUid: profile.uid,
               cameraFactory: widget.cameraFactory,
+              faceTrackerFactory: widget.faceTrackerFactory,
             ),
           ));
           break;
@@ -293,6 +300,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
             tags: widget.tags,
             activeLobbies: widget.activeLobbies,
             cameraFactory: widget.cameraFactory,
+            faceTrackerFactory: widget.faceTrackerFactory,
           );
         },
       ),
@@ -362,6 +370,7 @@ class _Home extends StatefulWidget {
   final TagRepository tags;
   final ActiveLobbyStore activeLobbies;
   final RoundCamera Function()? cameraFactory;
+  final FaceTracker Function(RoundCamera)? faceTrackerFactory;
   const _Home({
     required this.profile,
     required this.embedder,
@@ -369,6 +378,7 @@ class _Home extends StatefulWidget {
     required this.tags,
     required this.activeLobbies,
     this.cameraFactory,
+    this.faceTrackerFactory,
   });
 
   @override
@@ -439,6 +449,7 @@ class _HomeState extends State<_Home> {
       currentUid: widget.profile.uid,
       displayName: widget.profile.displayName,
       cameraFactory: widget.cameraFactory,
+      faceTrackerFactory: widget.faceTrackerFactory,
       child: kDebugMode ? _verifyPanel() : null,
     );
   }

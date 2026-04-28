@@ -5,8 +5,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:snapshot/camera/round_camera.dart';
 import 'package:snapshot/camera/testing/fake_round_camera.dart';
 import 'package:snapshot/face/face_embedder.dart';
+import 'package:snapshot/face/face_tracker.dart';
 import 'package:snapshot/face/no_face_detected_exception.dart';
 import 'package:snapshot/face/testing/fake_face_embedder.dart';
+import 'package:snapshot/face/testing/fake_face_tracker.dart';
 import 'package:snapshot/lobby/round_results_screen.dart';
 import 'package:snapshot/lobby/round_screen.dart';
 import 'package:snapshot/models/lobby.dart';
@@ -59,6 +61,25 @@ RoundCamera Function() _fakeCameraReturning(Uint8List? bytes) {
   return () => FakeRoundCamera(framePayload: bytes);
 }
 
+/// Factory that hands the screen a fresh [FakeFaceTracker]. The tests
+/// that don't care about the reticle just want isolation from the
+/// real ML Kit-backed tracker; tests that *do* want to drive the
+/// reticle capture the instance via [_capturingTrackerFactory].
+FaceTracker Function(RoundCamera) _fakeTrackerFactory() =>
+    (_) => FakeFaceTracker();
+
+/// Same as [_fakeTrackerFactory] but writes the tracker to [holder]
+/// so tests can drive emissions through it.
+FaceTracker Function(RoundCamera) _capturingTrackerFactory(
+  List<FakeFaceTracker> holder,
+) {
+  return (_) {
+    final tracker = FakeFaceTracker();
+    holder.add(tracker);
+    return tracker;
+  };
+}
+
 void main() {
   testWidgets('renders countdown, lives hearts, and alive count', (tester) async {
     final ctx = await _activeLobby();
@@ -76,6 +97,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(null),
+          faceTrackerFactory: _fakeTrackerFactory(),
           clock: () => now,
         ),
       ),
@@ -116,6 +138,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -157,6 +180,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -193,6 +217,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -228,6 +253,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -260,6 +286,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(null),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -294,6 +321,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(null),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -317,6 +345,7 @@ void main() {
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(null),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -341,6 +370,7 @@ void main() {
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(null),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -366,6 +396,7 @@ void main() {
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(null),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -461,6 +492,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -504,6 +536,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -545,6 +578,7 @@ void main() {
             lobbyId: ctx.lobbyId,
             currentUid: 'host-1',
             cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _fakeTrackerFactory(),
             clock: () => now,
           ),
         ),
@@ -597,6 +631,7 @@ void main() {
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           cameraFactory: () => camera,
+          faceTrackerFactory: _fakeTrackerFactory(),
         ),
       ),
     );
@@ -611,6 +646,252 @@ void main() {
     expect(camera.disposeCalls, greaterThanOrEqualTo(1));
 
     addTearDown(ctx.repo.dispose);
+  });
+
+  group('face reticle', () {
+    testWidgets('hides when no face is tracked', (tester) async {
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+      final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+      final captured = <FakeFaceTracker>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: tags,
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _capturingTrackerFactory(captured),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+      // Tracker is wired up and started by the time the camera resolves.
+      expect(captured, hasLength(1));
+      expect(captured.single.startCalls, 1);
+
+      // No emissions yet → no reticle in the tree.
+      expect(find.byKey(const ValueKey('round-face-reticle')), findsNothing);
+
+      addTearDown(ctx.repo.dispose);
+    });
+
+    testWidgets('renders a white reticle while a face is tracked',
+        (tester) async {
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+      final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+      final captured = <FakeFaceTracker>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: tags,
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _capturingTrackerFactory(captured),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+
+      captured.single.emit(const TrackedFace(
+        normalizedBounds: Rect.fromLTRB(0.4, 0.35, 0.6, 0.55),
+        aimLocked: false,
+      ));
+      await _settleShortOf1s(tester);
+
+      final reticle = find.byKey(const ValueKey('round-face-reticle'));
+      expect(reticle, findsOneWidget);
+      final container = tester.widget<AnimatedContainer>(reticle);
+      final decoration = container.decoration as BoxDecoration?;
+      expect(decoration?.border?.top.color, Colors.white);
+
+      addTearDown(ctx.repo.dispose);
+    });
+
+    testWidgets('flips the reticle to green when aim-locked', (tester) async {
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+      final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+      final captured = <FakeFaceTracker>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: tags,
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _capturingTrackerFactory(captured),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+
+      captured.single.emit(const TrackedFace(
+        normalizedBounds: Rect.fromLTRB(0.42, 0.4, 0.58, 0.6),
+        aimLocked: true,
+      ));
+      await _settleShortOf1s(tester);
+
+      final container = tester.widget<AnimatedContainer>(
+        find.byKey(const ValueKey('round-face-reticle')),
+      );
+      final decoration = container.decoration as BoxDecoration?;
+      expect(decoration?.border?.top.color, Colors.greenAccent);
+
+      addTearDown(ctx.repo.dispose);
+    });
+
+    testWidgets('clears the reticle when the tracker emits null',
+        (tester) async {
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+      final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+      final captured = <FakeFaceTracker>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: tags,
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _capturingTrackerFactory(captured),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+
+      captured.single.emit(const TrackedFace(
+        normalizedBounds: Rect.fromLTRB(0.4, 0.35, 0.6, 0.55),
+        aimLocked: false,
+      ));
+      await _settleShortOf1s(tester);
+      expect(find.byKey(const ValueKey('round-face-reticle')), findsOneWidget);
+
+      captured.single.emitNone();
+      await _settleShortOf1s(tester);
+      expect(find.byKey(const ValueKey('round-face-reticle')), findsNothing);
+
+      addTearDown(ctx.repo.dispose);
+    });
+
+    testWidgets('stops + disposes the tracker when the screen unmounts',
+        (tester) async {
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+      final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+      final captured = <FakeFaceTracker>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: tags,
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _capturingTrackerFactory(captured),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+      expect(captured.single.disposeCalls, 0);
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await _settleShortOf1s(tester);
+
+      expect(captured.single.disposeCalls, greaterThanOrEqualTo(1));
+
+      addTearDown(ctx.repo.dispose);
+    });
+  });
+
+  group('coverFitRect', () {
+    test('matching aspect ratio → identity scaling', () {
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.4, 0.4, 0.6, 0.6),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(450, 800),
+      )!;
+      // Preview AR 9/16 == screen AR 450/800 → no crop, no scale.
+      expect(r.left, closeTo(0.4 * 450, 1e-9));
+      expect(r.top, closeTo(0.4 * 800, 1e-9));
+      expect(r.width, closeTo(0.2 * 450, 1e-9));
+      expect(r.height, closeTo(0.2 * 800, 1e-9));
+    });
+
+    test('preview wider than screen → fit height, crop sides', () {
+      // Preview AR 16/9, screen 9/16 (very tall) — preview gets blown
+      // up to fill height (800), width overflows past the screen and
+      // is cropped equally on each side. A face centered horizontally
+      // in preview space stays centered horizontally on screen.
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.45, 0.45, 0.55, 0.55),
+        previewAspectRatio: 16 / 9,
+        screenSize: const Size(450, 800),
+      )!;
+      expect(r.center.dx, closeTo(450 / 2, 1e-6));
+      expect(r.center.dy, closeTo(800 / 2, 1e-6));
+      // height = 0.1 * renderedH = 0.1 * 800 = 80
+      expect(r.height, closeTo(80, 1e-6));
+      // width = 0.1 * renderedW where renderedW = 800 * 16/9 ≈ 1422
+      expect(r.width, closeTo(0.1 * 800 * 16 / 9, 1e-6));
+    });
+
+    test('preview taller than screen → fit width, crop top+bottom', () {
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.45, 0.45, 0.55, 0.55),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(800, 450),
+      )!;
+      // Centered face stays centered.
+      expect(r.center.dx, closeTo(800 / 2, 1e-6));
+      expect(r.center.dy, closeTo(450 / 2, 1e-6));
+      // width = 0.1 * renderedW = 0.1 * 800 = 80
+      expect(r.width, closeTo(80, 1e-6));
+      // height = 0.1 * renderedH where renderedH = 800 / (9/16)
+      expect(r.height, closeTo(0.1 * 800 / (9 / 16), 1e-6));
+    });
+
+    test('zero-area placement → null', () {
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.5, 0.5, 0.5, 0.5),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(450, 800),
+      );
+      expect(r, isNull);
+    });
+
+    test('clamps when the box overhangs the visible region', () {
+      // Off-center face that reaches past the right edge — should
+      // still fit horizontally, with its right edge clamped to the
+      // screen width.
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.9, 0.4, 1.2, 0.6),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(450, 800),
+      )!;
+      expect(r.right, closeTo(450, 1e-6));
+    });
   });
 }
 

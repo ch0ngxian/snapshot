@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:camera/camera.dart' show CameraImage;
 import 'package:flutter/material.dart';
 
 import '../round_camera.dart';
@@ -19,6 +20,7 @@ class FakeRoundCamera implements RoundCamera {
 
   bool _initialized = false;
   bool _disposed = false;
+  void Function(CameraImage)? _imageStreamCallback;
 
   /// Counters useful for asserting against in tests.
   int initializeCalls = 0;
@@ -26,6 +28,8 @@ class FakeRoundCamera implements RoundCamera {
   int pauseCalls = 0;
   int resumeCalls = 0;
   int disposeCalls = 0;
+  int startImageStreamCalls = 0;
+  int stopImageStreamCalls = 0;
 
   FakeRoundCamera({this.framePayload, this.throwOnCapture});
 
@@ -36,6 +40,11 @@ class FakeRoundCamera implements RoundCamera {
   /// a different shape; defaults to a typical portrait phone preview.
   @override
   double previewAspectRatio = 9 / 16;
+
+  /// Tests can override to exercise rotation paths. Defaults to a
+  /// common rear-camera Android value.
+  @override
+  int sensorOrientation = 90;
 
   @override
   Future<void> initialize() async {
@@ -49,6 +58,25 @@ class FakeRoundCamera implements RoundCamera {
     if (throwOnCapture != null) throw throwOnCapture!;
     return framePayload;
   }
+
+  @override
+  Future<void> startImageStream(
+    void Function(CameraImage image) onImage,
+  ) async {
+    startImageStreamCalls++;
+    _imageStreamCallback = onImage;
+  }
+
+  @override
+  Future<void> stopImageStream() async {
+    stopImageStreamCalls++;
+    _imageStreamCallback = null;
+  }
+
+  /// `true` while a consumer has an active image-stream subscription.
+  /// Used in tests that want to assert the round screen wired the
+  /// tracker up correctly without poking at the callback identity.
+  bool get isStreaming => _imageStreamCallback != null;
 
   @override
   Future<void> pause() async {
@@ -65,6 +93,7 @@ class FakeRoundCamera implements RoundCamera {
     disposeCalls++;
     _disposed = true;
     _initialized = false;
+    _imageStreamCallback = null;
   }
 
   @override

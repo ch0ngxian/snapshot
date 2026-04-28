@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../camera/round_camera.dart';
 import '../face/face_embedder.dart';
+import '../face/face_tracker.dart';
 import '../services/active_lobby_store.dart';
 import '../services/lobby_repository.dart';
 import '../services/tag_repository.dart';
@@ -26,6 +27,8 @@ class LobbyEntryScreen extends StatefulWidget {
   /// (and by extension to [RoundScreen]) so widget tests can inject a
   /// fake camera.
   final RoundCamera Function()? cameraFactory;
+  /// Same idea for the live face tracker.
+  final FaceTracker Function(RoundCamera)? faceTrackerFactory;
 
   const LobbyEntryScreen({
     super.key,
@@ -37,6 +40,7 @@ class LobbyEntryScreen extends StatefulWidget {
     required this.displayName,
     this.child,
     this.cameraFactory,
+    this.faceTrackerFactory,
   });
 
   @override
@@ -65,6 +69,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
           lobbyId: created.lobbyId,
           currentUid: widget.currentUid,
           cameraFactory: widget.cameraFactory,
+          faceTrackerFactory: widget.faceTrackerFactory,
         ),
       ));
       if (!mounted) return;
@@ -97,6 +102,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
         lobbyId: lobbyId,
         currentUid: widget.currentUid,
         cameraFactory: widget.cameraFactory,
+        faceTrackerFactory: widget.faceTrackerFactory,
       ),
     ));
   }
