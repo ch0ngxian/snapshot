@@ -18,6 +18,7 @@ _Last updated: 2026-04-28_
 | Server-side cooldown (5s tagger) | ✅ in `submitTag` |
 | Server-side immunity (10s post-hit) | ✅ in `submitTag` |
 | Idempotency key on `submitTag` | ✅ in `submitTag` |
+| Auto-rejoin lobby/round on app relaunch | ✅ shipped (PR #17) |
 | Host-disconnect auto-promote | ❌ TODO |
 | Mutual elimination → tie (last 2 alive) | ❌ TODO |
 | BigQuery view + threshold tuning script | ❌ TODO |
@@ -28,10 +29,11 @@ _Last updated: 2026-04-28_
 
 ## Recent session changes (2026-04-28)
 
-- Bumped `mobile_scanner` 5.x → 7.x in PR #18 to resolve the MLKit version conflict on iOS pod install (lands separately from this PR).
+- Bumped `mobile_scanner` 5.x → 7.x to resolve the MLKit version conflict on iOS pod install (PR #18 merged; iOS `pod install` + device QR-scan smoke test still pending — see PR #18 test plan).
 - Deployed Phase 1+2 callables, firestore/storage rules, and remote config to `cx-snapshot` (was previously stuck on `deleteUserData` only).
 - Granted `allUsers` Cloud Run invoker on all six callables (root cause of the `UNAUTHENTICATED` error).
-- Solo-device test loop validated end-to-end via `tools/seed_opponent.cjs` clone-host workflow.
+- Solo-device test loop validated end-to-end via `tools/seed_opponent.cjs` clone-host workflow (tooling shipped in PR #19).
+- Auto-rejoin on app relaunch shipped (PR #17): closing/reopening mid-round restores the lobby/round screen instead of dropping the player.
 
 ## Where you are right now
 
