@@ -28,7 +28,7 @@ _Last updated: 2026-04-28_
 
 ## Recent session changes (2026-04-28)
 
-- Bumped `mobile_scanner` 5.x → 7.x to resolve MLKit version conflict on iOS pod install.
+- Bumped `mobile_scanner` 5.x → 7.x in PR #18 to resolve the MLKit version conflict on iOS pod install (lands separately from this PR).
 - Deployed Phase 1+2 callables, firestore/storage rules, and remote config to `cx-snapshot` (was previously stuck on `deleteUserData` only).
 - Granted `allUsers` Cloud Run invoker on all six callables (root cause of the `UNAUTHENTICATED` error).
 - Solo-device test loop validated end-to-end via `tools/seed_opponent.cjs` clone-host workflow.

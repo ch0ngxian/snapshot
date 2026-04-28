@@ -51,7 +51,6 @@ void main() {
       cropped,
       width: _inputSize,
       height: _inputSize,
-      interpolation: img.Interpolation.average,
     );
 
     final interpreter = Interpreter.fromFile(modelFile);

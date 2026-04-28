@@ -323,7 +323,6 @@ async function seedFromFacePhoto(facePhoto, crop) {
     raw = readFileSync(outputPath, "utf8");
   } catch (error) {
     const stderr = error.stderr ? String(error.stderr).trim() : "";
-    const cause = stderr ? `\n${stderr}` : "";
     const stdout = error.stdout ? String(error.stdout).trim() : "";
     const logs = [stdout, stderr].filter(Boolean).join("\n");
     fail(
@@ -343,17 +342,17 @@ async function seedFromFacePhoto(facePhoto, crop) {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    fail(`could not parse embed_face.dart output as JSON:\n${raw}`);
+    fail(`could not parse tools/embed_face_test.dart output as JSON:\n${raw}`);
   }
 
   if (!isValidEmbedding(parsed.embedding)) {
-    fail("embed_face.dart returned an invalid embedding");
+    fail("tools/embed_face_test.dart returned an invalid embedding");
   }
   if (
     typeof parsed.modelVersion !== "string" ||
     parsed.modelVersion.length === 0
   ) {
-    fail("embed_face.dart returned an invalid modelVersion");
+    fail("tools/embed_face_test.dart returned an invalid modelVersion");
   }
 
   return {
