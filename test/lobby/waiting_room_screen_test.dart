@@ -7,6 +7,7 @@ import 'package:snapshot/lobby/rules_editor.dart';
 import 'package:snapshot/lobby/waiting_room_screen.dart';
 import 'package:snapshot/models/lobby.dart';
 import 'package:snapshot/services/tag_repository.dart';
+import 'package:snapshot/services/testing/in_memory_active_lobby_store.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
 import 'package:snapshot/services/testing/in_memory_tag_repository.dart';
 
@@ -21,6 +22,7 @@ Future<void> _pumpScreen(
       repo: repo,
       tags: InMemoryTagRepository.fromQueue(const <TagSubmission>[]),
       embedder: const FakeFaceEmbedder(),
+      activeLobbies: InMemoryActiveLobbyStore(),
       lobbyId: lobbyId,
       currentUid: currentUid,
     ),

@@ -4,6 +4,7 @@ import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/main.dart';
 import 'package:snapshot/services/tag_repository.dart';
 import 'package:snapshot/services/testing/fake_auth_bootstrap.dart';
+import 'package:snapshot/services/testing/in_memory_active_lobby_store.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
 import 'package:snapshot/services/testing/in_memory_tag_repository.dart';
 import 'package:snapshot/services/testing/in_memory_user_repository.dart';
@@ -22,6 +23,7 @@ void main() {
           tags: InMemoryTagRepository.fromQueue(const <TagSubmission>[]),
           fcm: NoopFcmRegistrar(),
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           buildTagPushListener: (_) => NoopTagPushListener(),
         ),
       );

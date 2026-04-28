@@ -10,6 +10,7 @@ import '../face/face_embedder.dart';
 import '../face/no_face_detected_exception.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
+import '../services/active_lobby_store.dart';
 import '../services/lobby_repository.dart';
 import '../services/tag_id.dart';
 import '../services/tag_repository.dart';
@@ -25,6 +26,7 @@ class RoundScreen extends StatefulWidget {
   final LobbyRepository repo;
   final TagRepository tags;
   final FaceEmbedder embedder;
+  final ActiveLobbyStore activeLobbies;
   final String lobbyId;
   final String currentUid;
 
@@ -45,6 +47,7 @@ class RoundScreen extends StatefulWidget {
     required this.repo,
     required this.tags,
     required this.embedder,
+    required this.activeLobbies,
     required this.lobbyId,
     required this.currentUid,
     Future<Uint8List?> Function()? pickPhoto,
@@ -86,6 +89,10 @@ class _RoundScreenState extends State<RoundScreen> {
     // 1Hz tick is enough — display granularity is mm:ss and the
     // expiry-detect path is idempotent server-side anyway.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) => _onTick());
+    // Re-save defensively. WaitingRoomScreen already wrote this on the
+    // create/join path, but auto-rejoin lands here directly when the
+    // saved lobby is already `active`, so refresh the hint either way.
+    unawaited(widget.activeLobbies.save(widget.lobbyId));
   }
 
   @override
@@ -134,6 +141,9 @@ class _RoundScreenState extends State<RoundScreen> {
   void _routeToResults() {
     if (_resultsRouted || !mounted) return;
     _resultsRouted = true;
+    // Round is over — drop the resume hint so a relaunch lands on the
+    // home screen, not back on a finished round.
+    unawaited(widget.activeLobbies.clear());
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (_) => RoundResultsScreen(
@@ -292,6 +302,9 @@ class _RoundScreenState extends State<RoundScreen> {
           // the error branch — drop the ticker and surface a terminal UI.
           _ticker?.cancel();
           _lobby = null;
+          // No lobby to resume into — clear the hint so a relaunch goes
+          // home instead of looping back to this dead round.
+          unawaited(widget.activeLobbies.clear());
           return const _RoundUnavailable(
             message: 'This round is no longer available.',
           );

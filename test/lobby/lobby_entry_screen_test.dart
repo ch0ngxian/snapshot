@@ -4,6 +4,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/lobby/lobby_entry_screen.dart';
 import 'package:snapshot/services/tag_repository.dart';
+import 'package:snapshot/services/testing/in_memory_active_lobby_store.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
 import 'package:snapshot/services/testing/in_memory_tag_repository.dart';
 
@@ -18,6 +19,7 @@ void main() {
         repo: repo,
         tags: tags,
         embedder: const FakeFaceEmbedder(),
+        activeLobbies: InMemoryActiveLobbyStore(),
         currentUid: 'host-1',
         displayName: 'Alice',
       ),
@@ -45,6 +47,7 @@ void main() {
         repo: repo,
         tags: tags,
         embedder: const FakeFaceEmbedder(),
+        activeLobbies: InMemoryActiveLobbyStore(),
         currentUid: 'joiner-1',
         displayName: 'Bob',
       ),
