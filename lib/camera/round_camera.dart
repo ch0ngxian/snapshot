@@ -32,11 +32,34 @@ abstract class RoundCamera {
   /// when the camera isn't initialized yet.
   double get previewAspectRatio;
 
+  /// Sensor orientation in degrees (`0`, `90`, `180`, `270`) — the
+  /// rotation the platform applies to map raw sensor pixels onto the
+  /// upright preview. Live face detection needs this to translate ML
+  /// Kit's image-space bounding boxes into the preview's coordinate
+  /// space. Returns `0` before [initialize] resolves.
+  int get sensorOrientation;
+
   /// Capture the current frame and return JPEG bytes, or `null` if the
   /// camera isn't ready (e.g. paused, mid-init, disposed). Errors from
   /// the platform layer are rethrown — the caller decides whether to
   /// surface them as a verdict-shaped toast.
   Future<Uint8List?> captureFrame();
+
+  /// Begin delivering preview frames to [onImage] for things like the
+  /// live face-detection reticle (GAMEPLAY.md §78). Frames arrive at
+  /// the platform's preview rate; consumers are expected to throttle
+  /// internally — running ML Kit on every frame is too expensive on
+  /// low-end Android (GAMEPLAY.md §164).
+  ///
+  /// Frames are in the format chosen at controller construction —
+  /// `NV21` on Android, `BGRA8888` on iOS — both ML-Kit friendly.
+  /// Calling twice without a [stopImageStream] in between is an error
+  /// (the camera plugin only supports one consumer).
+  Future<void> startImageStream(void Function(CameraImage image) onImage);
+
+  /// Stop delivering preview frames. Idempotent — safe to call when
+  /// no stream is active.
+  Future<void> stopImageStream();
 
   /// Release the platform camera (used while the app is backgrounded).
   /// Idempotent — safe to call when already paused / not yet inited.
@@ -71,8 +94,10 @@ class PackageCameraRoundCamera implements RoundCamera {
   final CameraController Function(CameraDescription) _controllerFactory;
 
   CameraController? _controller;
+  CameraDescription? _camera;
   bool _initialized = false;
   bool _disposed = false;
+  bool _streaming = false;
   Future<void>? _initFuture;
 
   PackageCameraRoundCamera({
@@ -82,13 +107,21 @@ class PackageCameraRoundCamera implements RoundCamera {
         _controllerFactory = controllerFactory ?? _defaultController;
 
   static CameraController _defaultController(CameraDescription camera) {
+    // ML-Kit-friendly stream formats: NV21 on Android, BGRA on iOS.
+    // The plugin's JPEG group disables `startImageStream`, so we trade
+    // the JPEG path for a raw format here — `takePicture()` still
+    // returns JPEG regardless of the stream format choice. Other
+    // platforms (desktop / web) take whatever the plugin defaults to.
+    final ImageFormatGroup format = Platform.isAndroid
+        ? ImageFormatGroup.nv21
+        : Platform.isIOS
+            ? ImageFormatGroup.bgra8888
+            : ImageFormatGroup.unknown;
     return CameraController(
       camera,
       ResolutionPreset.medium,
       enableAudio: false,
-      // JPEG keeps the path-of-least-change: takePicture() already lands
-      // on disk as a JPEG and the embedder pipeline ingests JPEG bytes.
-      imageFormatGroup: ImageFormatGroup.jpeg,
+      imageFormatGroup: format,
     );
   }
 
@@ -106,6 +139,9 @@ class PackageCameraRoundCamera implements RoundCamera {
     }
     return controller.value.aspectRatio;
   }
+
+  @override
+  int get sensorOrientation => _camera?.sensorOrientation ?? 0;
 
   @override
   Future<void> initialize() {
@@ -136,6 +172,7 @@ class PackageCameraRoundCamera implements RoundCamera {
       return;
     }
     _controller = controller;
+    _camera = rear;
     _initialized = true;
   }
 
@@ -164,9 +201,40 @@ class PackageCameraRoundCamera implements RoundCamera {
   }
 
   @override
+  Future<void> startImageStream(
+    void Function(CameraImage image) onImage,
+  ) async {
+    final controller = _controller;
+    if (controller == null || !_initialized || _disposed) return;
+    if (_streaming) return;
+    try {
+      await controller.startImageStream(onImage);
+      _streaming = true;
+    } catch (e, st) {
+      debugPrint('PackageCameraRoundCamera.startImageStream failed: $e\n$st');
+    }
+  }
+
+  @override
+  Future<void> stopImageStream() async {
+    final controller = _controller;
+    if (controller == null || _disposed || !_streaming) return;
+    try {
+      await controller.stopImageStream();
+    } catch (e, st) {
+      debugPrint('PackageCameraRoundCamera.stopImageStream failed: $e\n$st');
+    } finally {
+      _streaming = false;
+    }
+  }
+
+  @override
   Future<void> pause() async {
     final controller = _controller;
     if (controller == null || _disposed) return;
+    // Drop the image stream first — `pausePreview` doesn't tear it down
+    // and on Android it's the stream that pins the camera awake.
+    if (_streaming) await stopImageStream();
     try {
       await controller.pausePreview();
     } catch (e, st) {
@@ -183,6 +251,8 @@ class PackageCameraRoundCamera implements RoundCamera {
     } catch (e, st) {
       debugPrint('PackageCameraRoundCamera.resume failed: $e\n$st');
     }
+    // Note: callers (RoundScreen) re-attach the image stream after
+    // resume — the tracker re-subscribes through its own start() call.
   }
 
   @override
@@ -190,7 +260,14 @@ class PackageCameraRoundCamera implements RoundCamera {
     _disposed = true;
     final controller = _controller;
     _controller = null;
+    _camera = null;
     _initialized = false;
+    if (_streaming) {
+      try {
+        await controller?.stopImageStream();
+      } catch (_) {/* best-effort during teardown */}
+      _streaming = false;
+    }
     if (controller != null) {
       try {
         await controller.dispose();

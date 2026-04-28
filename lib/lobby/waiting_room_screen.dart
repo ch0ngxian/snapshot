@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../camera/round_camera.dart';
 import '../face/face_embedder.dart';
+import '../face/face_tracker.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
 import '../services/active_lobby_store.dart';
@@ -30,6 +31,9 @@ class WaitingRoomScreen extends StatefulWidget {
   // flips to active. Production leaves it null so [RoundScreen] uses
   // its real-camera default.
   final RoundCamera Function()? cameraFactory;
+  // Same idea for the live face tracker — null in production, fake
+  // in widget tests.
+  final FaceTracker Function(RoundCamera)? faceTrackerFactory;
 
   const WaitingRoomScreen({
     super.key,
@@ -40,6 +44,7 @@ class WaitingRoomScreen extends StatefulWidget {
     required this.lobbyId,
     required this.currentUid,
     this.cameraFactory,
+    this.faceTrackerFactory,
   });
 
   @override
@@ -101,6 +106,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
           lobbyId: widget.lobbyId,
           currentUid: widget.currentUid,
           cameraFactory: widget.cameraFactory,
+          faceTrackerFactory: widget.faceTrackerFactory,
         ),
       ),
     );

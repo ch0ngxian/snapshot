@@ -8,6 +8,8 @@ import 'package:flutter/services.dart';
 
 import '../camera/round_camera.dart';
 import '../face/face_embedder.dart';
+import '../face/face_tracker.dart';
+import '../face/mlkit_face_tracker.dart';
 import '../face/no_face_detected_exception.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
@@ -56,6 +58,12 @@ class RoundScreen extends StatefulWidget {
   /// [RoundScreen] mount; the screen owns the lifecycle.
   final RoundCamera Function() cameraFactory;
 
+  /// Factory for the live face-detection tracker. Production hands
+  /// back an [MlKitFaceTracker] bound to the round's camera; widget
+  /// tests inject [FakeFaceTracker] so they don't need ML Kit. Called
+  /// once per mount, after the camera is initialized.
+  final FaceTracker Function(RoundCamera) faceTrackerFactory;
+
   /// Injectable clock for tests. Production uses [DateTime.now].
   final DateTime Function() clock;
 
@@ -71,8 +79,11 @@ class RoundScreen extends StatefulWidget {
     required this.lobbyId,
     required this.currentUid,
     RoundCamera Function()? cameraFactory,
+    FaceTracker Function(RoundCamera)? faceTrackerFactory,
     DateTime Function()? clock,
   })  : cameraFactory = cameraFactory ?? PackageCameraRoundCamera.new,
+        faceTrackerFactory = faceTrackerFactory ??
+            ((camera) => MlKitFaceTracker(camera: camera)),
         clock = clock ?? DateTime.now;
 
   @override
@@ -91,6 +102,9 @@ class _RoundScreenState extends State<RoundScreen>
   late final RoundCamera _camera;
   Object? _cameraInitError;
   bool _cameraReady = false;
+  FaceTracker? _faceTracker;
+  TrackedFace? _trackedFace;
+  StreamSubscription<TrackedFace?>? _faceSub;
   /// Anchor for the shutter cooldown ring. Set to the moment of the
   /// most recent server verdict that would have bumped the server-side
   /// `lastTagAttemptAt` (hit / no_match / immune). Null when no ring is
@@ -131,6 +145,22 @@ class _RoundScreenState extends State<RoundScreen>
       await _camera.initialize();
       if (!mounted) return;
       setState(() => _cameraReady = true);
+      // Spin the live face tracker up only after the camera is good
+      // to go — the production tracker subscribes to the camera's
+      // image stream, which doesn't exist until [initialize] resolves.
+      // Failures here are non-fatal: the round still plays without a
+      // reticle, just without the aim-assist visual.
+      try {
+        final tracker = widget.faceTrackerFactory(_camera);
+        _faceTracker = tracker;
+        _faceSub = tracker.faces.listen((face) {
+          if (!mounted) return;
+          setState(() => _trackedFace = face);
+        });
+        await tracker.start();
+      } catch (e, st) {
+        debugPrint('RoundScreen face tracker start failed: $e\n$st');
+      }
     } catch (e, st) {
       debugPrint('RoundScreen camera init failed: $e\n$st');
       if (!mounted) return;
@@ -143,6 +173,9 @@ class _RoundScreenState extends State<RoundScreen>
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _toastTimer?.cancel();
+    unawaited(_faceSub?.cancel());
+    final tracker = _faceTracker;
+    if (tracker != null) unawaited(tracker.dispose());
     unawaited(_camera.dispose());
     // Drop the round's portrait-only constraint. Flutter has no
     // getPreferredOrientations() to mirror, so we restore the framework
@@ -158,18 +191,33 @@ class _RoundScreenState extends State<RoundScreen>
     // Pause the camera when the app is backgrounded so we're not
     // burning the sensor while no one's looking, and resume on return.
     // The screen stays mounted (the lobby/round is still active) — only
-    // the platform camera is parked.
+    // the platform camera is parked. The face tracker pauses with it
+    // (its image-stream subscription would otherwise be left hanging
+    // off a paused camera) and is restarted on resume.
     switch (state) {
       case AppLifecycleState.inactive:
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
+        final tracker = _faceTracker;
+        if (tracker != null) unawaited(tracker.stop());
         unawaited(_camera.pause());
         break;
       case AppLifecycleState.resumed:
-        unawaited(_camera.resume());
+        unawaited(_resumeAfterBackground());
         break;
       case AppLifecycleState.detached:
         break;
+    }
+  }
+
+  Future<void> _resumeAfterBackground() async {
+    await _camera.resume();
+    final tracker = _faceTracker;
+    if (tracker == null || !mounted) return;
+    try {
+      await tracker.start();
+    } catch (e, st) {
+      debugPrint('RoundScreen face tracker resume failed: $e\n$st');
     }
   }
 
@@ -472,6 +520,7 @@ class _RoundScreenState extends State<RoundScreen>
           cooldownStart: _cooldownStart,
           cooldownDuration: _kCooldownDuration,
           clock: widget.clock,
+          trackedFace: _trackedFace,
         );
       },
     );
@@ -497,6 +546,7 @@ class _RoundShell extends StatelessWidget {
   final DateTime? cooldownStart;
   final Duration cooldownDuration;
   final DateTime Function() clock;
+  final TrackedFace? trackedFace;
 
   const _RoundShell({
     required this.lobby,
@@ -514,6 +564,7 @@ class _RoundShell extends StatelessWidget {
     required this.cooldownStart,
     required this.cooldownDuration,
     required this.clock,
+    required this.trackedFace,
   });
 
   @override
@@ -540,6 +591,17 @@ class _RoundShell extends StatelessWidget {
               child: cameraInitError != null
                   ? const _CameraUnavailableBackdrop()
                   : _ViewfinderBackdrop(camera: camera, ready: cameraReady),
+            ),
+
+            // Layer 1.5 — live face-detection reticle. Visible only
+            // when the tracker is currently locked onto a face;
+            // otherwise it renders nothing. Wrapped in IgnorePointer
+            // so it never wins the hit-test against the tap-to-fire
+            // zone or the shutter (GAMEPLAY.md §78).
+            Positioned.fill(
+              child: IgnorePointer(
+                child: _FaceReticle(face: trackedFace),
+              ),
             ),
 
             // Layer 2 — invisible bottom-half tap-to-fire zone. Sits
@@ -1254,6 +1316,71 @@ class _ToastBanner extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// GAMEPLAY.md §78 — live face-detection reticle. White by default,
+/// green when the tracker reports an aim-lock (face roughly centered
+/// AND large enough that a tag is likely to match). Position is driven
+/// by [TrackedFace.normalizedBounds], scaled against the available
+/// screen size; the current tracker emits coordinates in preview-
+/// widget space, so on phones whose preview aspect ratio matches the
+/// screen this aligns 1:1, and on others it's an approximation that's
+/// good enough as an aim-assist signal (the player gets the colour
+/// shift and is steering with the live camera anyway).
+class _FaceReticle extends StatelessWidget {
+  static const Key kReticleKey = ValueKey('round-face-reticle');
+
+  final TrackedFace? face;
+  const _FaceReticle({required this.face});
+
+  @override
+  Widget build(BuildContext context) {
+    final tracked = face;
+    if (tracked == null) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final h = constraints.maxHeight;
+        final box = tracked.normalizedBounds;
+        // Clamp into the visible area so a face straddling the edge
+        // doesn't render a stub of border outside the screen.
+        final left = (box.left * w).clamp(0.0, w);
+        final top = (box.top * h).clamp(0.0, h);
+        final right = (box.right * w).clamp(0.0, w);
+        final bottom = (box.bottom * h).clamp(0.0, h);
+        final width = (right - left).clamp(0.0, w);
+        final height = (bottom - top).clamp(0.0, h);
+        if (width <= 0 || height <= 0) return const SizedBox.shrink();
+        final color =
+            tracked.aimLocked ? Colors.greenAccent : Colors.white;
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned(
+              left: left,
+              top: top,
+              width: width,
+              height: height,
+              child: AnimatedContainer(
+                key: kReticleKey,
+                duration: const Duration(milliseconds: 120),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: color, width: 3),
+                  boxShadow: [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.35),
+                      blurRadius: 6,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
