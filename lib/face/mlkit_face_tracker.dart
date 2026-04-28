@@ -134,7 +134,8 @@ class MlKitFaceTracker implements FaceTracker {
 
   Future<void> _runDetection(CameraImage image) async {
     try {
-      final input = _toInputImage(image);
+      final rotation = inputRotationFor(_camera.sensorOrientation);
+      final input = _toInputImage(image, rotation);
       if (input == null) {
         if (!_controller.isClosed) _controller.add(null);
         return;
@@ -150,13 +151,28 @@ class MlKitFaceTracker implements FaceTracker {
         final areaB = b.boundingBox.width * b.boundingBox.height;
         return areaA >= areaB ? a : b;
       });
-      final tracked = _toTrackedFace(
-        sensorBox: largest.boundingBox,
-        sensorWidth: image.width.toDouble(),
-        sensorHeight: image.height.toDouble(),
-        sensorOrientation: _camera.sensorOrientation,
+      // ML Kit applied the rotation we passed in metadata, so its
+      // returned bounding box is already in upright (post-rotation)
+      // coordinates. We just need the upright dimensions to normalize.
+      final isQuarterTurn = rotation == InputImageRotation.rotation90deg ||
+          rotation == InputImageRotation.rotation270deg;
+      final orientedWidth =
+          (isQuarterTurn ? image.height : image.width).toDouble();
+      final orientedHeight =
+          (isQuarterTurn ? image.width : image.height).toDouble();
+      final normalized = normalizeBox(
+        orientedBox: largest.boundingBox,
+        orientedWidth: orientedWidth,
+        orientedHeight: orientedHeight,
       );
-      _controller.add(tracked);
+      _controller.add(TrackedFace(
+        normalizedBounds: normalized,
+        aimLocked: isAimLocked(
+          normalized,
+          maxOffCenter: _maxOffCenter,
+          minFaceHeight: _minFaceHeight,
+        ),
+      ));
     } catch (e, st) {
       // Failed frame is not the end of the world — log and keep
       // listening. The reticle just won't update from this frame.
@@ -167,17 +183,20 @@ class MlKitFaceTracker implements FaceTracker {
   /// Constructs an [InputImage] from a raw camera frame. Format is
   /// platform-specific (NV21 on Android, BGRA on iOS) — both come
   /// through as a single contiguous buffer in [CameraImage.planes[0]].
-  InputImage? _toInputImage(CameraImage image) {
+  /// The [rotation] is the orientation ML Kit should apply *before*
+  /// processing so the detector sees an upright face — without it the
+  /// detector sees portrait phones sideways and detection accuracy
+  /// craters.
+  InputImage? _toInputImage(CameraImage image, InputImageRotation rotation) {
     if (image.planes.isEmpty) return null;
     final plane = image.planes.first;
     final InputImageFormat? format = _formatFor(image);
     if (format == null) return null;
-    // Pass rotation=0 — the post-detection bounding-box rotation in
-    // [_toTrackedFace] is the source of truth for orientation. Letting
-    // ML Kit rotate too would double-rotate.
+    // [size] and [bytesPerRow] describe the *raw* (pre-rotation)
+    // buffer; ML Kit rotates internally according to [rotation].
     final metadata = InputImageMetadata(
       size: Size(image.width.toDouble(), image.height.toDouble()),
-      rotation: InputImageRotation.rotation0deg,
+      rotation: rotation,
       format: format,
       bytesPerRow: plane.bytesPerRow,
     );
@@ -193,73 +212,38 @@ class MlKitFaceTracker implements FaceTracker {
     return null;
   }
 
-  TrackedFace _toTrackedFace({
-    required Rect sensorBox,
-    required double sensorWidth,
-    required double sensorHeight,
-    required int sensorOrientation,
-  }) {
-    final normalized = rotateAndNormalizeBox(
-      sensorBox: sensorBox,
-      sensorWidth: sensorWidth,
-      sensorHeight: sensorHeight,
-      sensorOrientation: sensorOrientation,
-    );
-    final aimLocked = isAimLocked(
-      normalized,
-      maxOffCenter: _maxOffCenter,
-      minFaceHeight: _minFaceHeight,
-    );
-    return TrackedFace(normalizedBounds: normalized, aimLocked: aimLocked);
-  }
-
-  /// Rotates [sensorBox] by [sensorOrientation] degrees clockwise and
-  /// normalizes against the *rotated* image dimensions, so the result
-  /// is in preview-widget coordinate space — `(0, 0)` top-left,
-  /// `(1, 1)` bottom-right.
-  ///
-  /// Visible for testing — the math is fiddly and we'd rather assert
-  /// against it directly than try to mount a real ML Kit detector.
-  static Rect rotateAndNormalizeBox({
-    required Rect sensorBox,
-    required double sensorWidth,
-    required double sensorHeight,
-    required int sensorOrientation,
-  }) {
+  /// Maps a sensor orientation in degrees (`0`/`90`/`180`/`270`) to
+  /// the [InputImageRotation] enum ML Kit expects. Visible for
+  /// testing.
+  static InputImageRotation inputRotationFor(int sensorOrientation) {
     switch (sensorOrientation % 360) {
       case 90:
-        // 90° CW: (x, y) sensor → (sensorH - y, x) preview.
-        // After rotation, preview width = sensorH, preview height = sensorW.
-        return Rect.fromLTRB(
-          (sensorHeight - sensorBox.bottom) / sensorHeight,
-          sensorBox.left / sensorWidth,
-          (sensorHeight - sensorBox.top) / sensorHeight,
-          sensorBox.right / sensorWidth,
-        );
+        return InputImageRotation.rotation90deg;
       case 180:
-        return Rect.fromLTRB(
-          (sensorWidth - sensorBox.right) / sensorWidth,
-          (sensorHeight - sensorBox.bottom) / sensorHeight,
-          (sensorWidth - sensorBox.left) / sensorWidth,
-          (sensorHeight - sensorBox.top) / sensorHeight,
-        );
+        return InputImageRotation.rotation180deg;
       case 270:
-        // 270° CW = 90° CCW: (x, y) sensor → (y, sensorW - x) preview.
-        return Rect.fromLTRB(
-          sensorBox.top / sensorHeight,
-          (sensorWidth - sensorBox.right) / sensorWidth,
-          sensorBox.bottom / sensorHeight,
-          (sensorWidth - sensorBox.left) / sensorWidth,
-        );
+        return InputImageRotation.rotation270deg;
       case 0:
       default:
-        return Rect.fromLTRB(
-          sensorBox.left / sensorWidth,
-          sensorBox.top / sensorHeight,
-          sensorBox.right / sensorWidth,
-          sensorBox.bottom / sensorHeight,
-        );
+        return InputImageRotation.rotation0deg;
     }
+  }
+
+  /// Normalizes ML Kit's upright bounding box against the upright
+  /// (post-rotation) image dimensions. Result is in preview-widget
+  /// coordinate space — `(0, 0)` top-left, `(1, 1)` bottom-right.
+  /// Visible for testing.
+  static Rect normalizeBox({
+    required Rect orientedBox,
+    required double orientedWidth,
+    required double orientedHeight,
+  }) {
+    return Rect.fromLTRB(
+      orientedBox.left / orientedWidth,
+      orientedBox.top / orientedHeight,
+      orientedBox.right / orientedWidth,
+      orientedBox.bottom / orientedHeight,
+    );
   }
 
   /// `true` when [normalized] is roughly centered AND tall enough that

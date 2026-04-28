@@ -597,10 +597,17 @@ class _RoundShell extends StatelessWidget {
             // when the tracker is currently locked onto a face;
             // otherwise it renders nothing. Wrapped in IgnorePointer
             // so it never wins the hit-test against the tap-to-fire
-            // zone or the shutter (GAMEPLAY.md §78).
+            // zone or the shutter (GAMEPLAY.md §78). The reticle
+            // applies the same `BoxFit.cover` transform the preview
+            // uses, so its position lines up with the cropped /
+            // scaled preview pixels rather than drifting on devices
+            // whose screen aspect ratio differs from the camera's.
             Positioned.fill(
               child: IgnorePointer(
-                child: _FaceReticle(face: trackedFace),
+                child: _FaceReticle(
+                  face: trackedFace,
+                  previewAspectRatio: camera.previewAspectRatio,
+                ),
               ),
             ),
 
@@ -1322,18 +1329,24 @@ class _ToastBanner extends StatelessWidget {
 
 /// GAMEPLAY.md §78 — live face-detection reticle. White by default,
 /// green when the tracker reports an aim-lock (face roughly centered
-/// AND large enough that a tag is likely to match). Position is driven
-/// by [TrackedFace.normalizedBounds], scaled against the available
-/// screen size; the current tracker emits coordinates in preview-
-/// widget space, so on phones whose preview aspect ratio matches the
-/// screen this aligns 1:1, and on others it's an approximation that's
-/// good enough as an aim-assist signal (the player gets the colour
-/// shift and is steering with the live camera anyway).
+/// AND large enough that a tag is likely to match).
+///
+/// The tracker emits bounds normalized to preview space `[0, 1]^2`.
+/// The preview itself is rendered through `FittedBox(BoxFit.cover)`,
+/// so when the screen and preview aspect ratios differ the preview
+/// is scaled past the screen on the longer axis and cropped — the
+/// reticle has to apply the *same* transform or it drifts off the
+/// face on those devices. [coverFitRect] does the math; this widget
+/// just feeds the LayoutBuilder constraints in.
 class _FaceReticle extends StatelessWidget {
   static const Key kReticleKey = ValueKey('round-face-reticle');
 
   final TrackedFace? face;
-  const _FaceReticle({required this.face});
+  /// Aspect ratio of the camera preview (`width / height`) — matches
+  /// what `_ViewfinderBackdrop` hands to its `FittedBox`.
+  final double previewAspectRatio;
+
+  const _FaceReticle({required this.face, required this.previewAspectRatio});
 
   @override
   Widget build(BuildContext context) {
@@ -1341,28 +1354,22 @@ class _FaceReticle extends StatelessWidget {
     if (tracked == null) return const SizedBox.shrink();
     return LayoutBuilder(
       builder: (context, constraints) {
-        final w = constraints.maxWidth;
-        final h = constraints.maxHeight;
-        final box = tracked.normalizedBounds;
-        // Clamp into the visible area so a face straddling the edge
-        // doesn't render a stub of border outside the screen.
-        final left = (box.left * w).clamp(0.0, w);
-        final top = (box.top * h).clamp(0.0, h);
-        final right = (box.right * w).clamp(0.0, w);
-        final bottom = (box.bottom * h).clamp(0.0, h);
-        final width = (right - left).clamp(0.0, w);
-        final height = (bottom - top).clamp(0.0, h);
-        if (width <= 0 || height <= 0) return const SizedBox.shrink();
+        final placement = coverFitRect(
+          normalizedBounds: tracked.normalizedBounds,
+          previewAspectRatio: previewAspectRatio,
+          screenSize: constraints.biggest,
+        );
+        if (placement == null) return const SizedBox.shrink();
         final color =
             tracked.aimLocked ? Colors.greenAccent : Colors.white;
         return Stack(
           clipBehavior: Clip.none,
           children: [
             Positioned(
-              left: left,
-              top: top,
-              width: width,
-              height: height,
+              left: placement.left,
+              top: placement.top,
+              width: placement.width,
+              height: placement.height,
               child: AnimatedContainer(
                 key: kReticleKey,
                 duration: const Duration(milliseconds: 120),
@@ -1383,6 +1390,57 @@ class _FaceReticle extends StatelessWidget {
       },
     );
   }
+}
+
+/// Maps a normalized preview-space rect through the same
+/// `BoxFit.cover` transform the camera preview is rendered with, so
+/// overlay widgets (the face reticle today; future detection chrome
+/// later) line up with the cropped/scaled preview pixels.
+///
+/// Returns `null` if the rect would render with zero area after
+/// clamping to the visible region — saves the caller a follow-up
+/// shrink-check.
+///
+/// Visible at top level for testing; the math is fiddly enough to
+/// want assertions independent of widget mounting.
+@visibleForTesting
+Rect? coverFitRect({
+  required Rect normalizedBounds,
+  required double previewAspectRatio,
+  required Size screenSize,
+}) {
+  final screenW = screenSize.width;
+  final screenH = screenSize.height;
+  if (screenW <= 0 || screenH <= 0) return null;
+  if (previewAspectRatio <= 0) return null;
+  final screenAr = screenW / screenH;
+  // Cover scaling: fit the *shorter* normalized axis to the screen
+  // and let the longer axis overflow + crop.
+  final double renderedW;
+  final double renderedH;
+  final double offsetX;
+  final double offsetY;
+  if (previewAspectRatio > screenAr) {
+    // Preview is wider than screen → fit height, crop sides.
+    renderedH = screenH;
+    renderedW = screenH * previewAspectRatio;
+    offsetX = (screenW - renderedW) / 2;
+    offsetY = 0;
+  } else {
+    // Preview is taller than screen → fit width, crop top/bottom.
+    renderedW = screenW;
+    renderedH = screenW / previewAspectRatio;
+    offsetX = 0;
+    offsetY = (screenH - renderedH) / 2;
+  }
+  final left = (offsetX + normalizedBounds.left * renderedW).clamp(0.0, screenW);
+  final top = (offsetY + normalizedBounds.top * renderedH).clamp(0.0, screenH);
+  final right = (offsetX + normalizedBounds.right * renderedW).clamp(0.0, screenW);
+  final bottom = (offsetY + normalizedBounds.bottom * renderedH).clamp(0.0, screenH);
+  final width = right - left;
+  final height = bottom - top;
+  if (width <= 0 || height <= 0) return null;
+  return Rect.fromLTWH(left, top, width, height);
 }
 
 class _RoundUnavailable extends StatelessWidget {

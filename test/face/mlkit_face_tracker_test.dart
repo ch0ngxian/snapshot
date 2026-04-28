@@ -1,93 +1,45 @@
 import 'dart:ui' show Rect;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart'
+    show InputImageRotation;
 import 'package:snapshot/face/mlkit_face_tracker.dart';
 
 void main() {
-  group('rotateAndNormalizeBox', () {
-    // Treat the sensor frame as 1280x720 — typical landscape buffer
-    // from a portrait-oriented rear camera on Android. The face sits
-    // dead-center in sensor space (640, 360) ± 100x100.
-    const double sensorW = 1280;
-    const double sensorH = 720;
-    const Rect centerBox = Rect.fromLTRB(540, 260, 740, 460);
-
-    test('0° → identity normalization against sensor dimensions', () {
-      final r = MlKitFaceTracker.rotateAndNormalizeBox(
-        sensorBox: centerBox,
-        sensorWidth: sensorW,
-        sensorHeight: sensorH,
-        sensorOrientation: 0,
-      );
-      expect(r.left, closeTo(540 / 1280, 1e-9));
-      expect(r.right, closeTo(740 / 1280, 1e-9));
-      expect(r.top, closeTo(260 / 720, 1e-9));
-      expect(r.bottom, closeTo(460 / 720, 1e-9));
+  group('inputRotationFor', () {
+    test('maps 0/90/180/270 to the matching ML Kit enum', () {
+      expect(MlKitFaceTracker.inputRotationFor(0),
+          InputImageRotation.rotation0deg);
+      expect(MlKitFaceTracker.inputRotationFor(90),
+          InputImageRotation.rotation90deg);
+      expect(MlKitFaceTracker.inputRotationFor(180),
+          InputImageRotation.rotation180deg);
+      expect(MlKitFaceTracker.inputRotationFor(270),
+          InputImageRotation.rotation270deg);
     });
 
-    test('90° → preview width = sensorH, preview height = sensorW', () {
-      // After a 90° CW rotation a 1280x720 sensor frame becomes a
-      // 720x1280 portrait preview. A face centered in sensor space
-      // stays centered in preview space — that's the easy invariant
-      // to assert against.
-      final r = MlKitFaceTracker.rotateAndNormalizeBox(
-        sensorBox: centerBox,
-        sensorWidth: sensorW,
-        sensorHeight: sensorH,
-        sensorOrientation: 90,
-      );
-      expect(r.center.dx, closeTo(0.5, 1e-9));
-      expect(r.center.dy, closeTo(0.5, 1e-9));
-      // 200px of sensor width becomes 200px of preview height (rotated
-      // axis), normalized against sensorW=1280.
-      expect(r.height, closeTo(200 / 1280, 1e-9));
-      // 200px of sensor height becomes 200px of preview width,
-      // normalized against sensorH=720.
-      expect(r.width, closeTo(200 / 720, 1e-9));
+    test('treats out-of-range values as their mod-360 equivalent', () {
+      expect(MlKitFaceTracker.inputRotationFor(360),
+          InputImageRotation.rotation0deg);
+      expect(MlKitFaceTracker.inputRotationFor(450),
+          InputImageRotation.rotation90deg);
     });
+  });
 
-    test('270° → mirror of 90° (CCW vs CW)', () {
-      final r = MlKitFaceTracker.rotateAndNormalizeBox(
-        sensorBox: centerBox,
-        sensorWidth: sensorW,
-        sensorHeight: sensorH,
-        sensorOrientation: 270,
+  group('normalizeBox', () {
+    test('normalizes ML Kit upright box against post-rotation dims', () {
+      // 1280x720 sensor frame, sensor orientation 90° → ML Kit detects
+      // on a 720x1280 upright frame and returns the box in that frame.
+      final box = Rect.fromLTRB(310, 540, 410, 740);
+      final r = MlKitFaceTracker.normalizeBox(
+        orientedBox: box,
+        orientedWidth: 720,
+        orientedHeight: 1280,
       );
-      expect(r.center.dx, closeTo(0.5, 1e-9));
-      expect(r.center.dy, closeTo(0.5, 1e-9));
-      expect(r.height, closeTo(200 / 1280, 1e-9));
-      expect(r.width, closeTo(200 / 720, 1e-9));
-    });
-
-    test('180° → diagonally opposite point in normalized space', () {
-      // Top-left corner of the sensor → bottom-right corner of preview.
-      const tl = Rect.fromLTRB(0, 0, 100, 100);
-      final r = MlKitFaceTracker.rotateAndNormalizeBox(
-        sensorBox: tl,
-        sensorWidth: sensorW,
-        sensorHeight: sensorH,
-        sensorOrientation: 180,
-      );
-      expect(r.right, closeTo(1.0, 1e-9));
-      expect(r.bottom, closeTo(1.0, 1e-9));
-      expect(r.left, closeTo(1.0 - 100 / 1280, 1e-9));
-      expect(r.top, closeTo(1.0 - 100 / 720, 1e-9));
-    });
-
-    test('off-center sensor box rotates as expected at 90°', () {
-      // Top-left of sensor (away from center) — under a 90° CW
-      // rotation a corner near the top-left of sensor space ends up
-      // near the top-right of preview space.
-      const tl = Rect.fromLTRB(0, 0, 100, 100);
-      final r = MlKitFaceTracker.rotateAndNormalizeBox(
-        sensorBox: tl,
-        sensorWidth: sensorW,
-        sensorHeight: sensorH,
-        sensorOrientation: 90,
-      );
-      // After 90° CW: sensor top-left → preview top-right.
-      expect(r.right, closeTo(1.0, 1e-9));
-      expect(r.top, closeTo(0.0, 1e-9));
+      expect(r.left, closeTo(310 / 720, 1e-9));
+      expect(r.top, closeTo(540 / 1280, 1e-9));
+      expect(r.right, closeTo(410 / 720, 1e-9));
+      expect(r.bottom, closeTo(740 / 1280, 1e-9));
     });
   });
 

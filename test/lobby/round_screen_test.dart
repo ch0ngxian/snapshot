@@ -824,6 +824,75 @@ void main() {
       addTearDown(ctx.repo.dispose);
     });
   });
+
+  group('coverFitRect', () {
+    test('matching aspect ratio → identity scaling', () {
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.4, 0.4, 0.6, 0.6),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(450, 800),
+      )!;
+      // Preview AR 9/16 == screen AR 450/800 → no crop, no scale.
+      expect(r.left, closeTo(0.4 * 450, 1e-9));
+      expect(r.top, closeTo(0.4 * 800, 1e-9));
+      expect(r.width, closeTo(0.2 * 450, 1e-9));
+      expect(r.height, closeTo(0.2 * 800, 1e-9));
+    });
+
+    test('preview wider than screen → fit height, crop sides', () {
+      // Preview AR 16/9, screen 9/16 (very tall) — preview gets blown
+      // up to fill height (800), width overflows past the screen and
+      // is cropped equally on each side. A face centered horizontally
+      // in preview space stays centered horizontally on screen.
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.45, 0.45, 0.55, 0.55),
+        previewAspectRatio: 16 / 9,
+        screenSize: const Size(450, 800),
+      )!;
+      expect(r.center.dx, closeTo(450 / 2, 1e-6));
+      expect(r.center.dy, closeTo(800 / 2, 1e-6));
+      // height = 0.1 * renderedH = 0.1 * 800 = 80
+      expect(r.height, closeTo(80, 1e-6));
+      // width = 0.1 * renderedW where renderedW = 800 * 16/9 ≈ 1422
+      expect(r.width, closeTo(0.1 * 800 * 16 / 9, 1e-6));
+    });
+
+    test('preview taller than screen → fit width, crop top+bottom', () {
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.45, 0.45, 0.55, 0.55),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(800, 450),
+      )!;
+      // Centered face stays centered.
+      expect(r.center.dx, closeTo(800 / 2, 1e-6));
+      expect(r.center.dy, closeTo(450 / 2, 1e-6));
+      // width = 0.1 * renderedW = 0.1 * 800 = 80
+      expect(r.width, closeTo(80, 1e-6));
+      // height = 0.1 * renderedH where renderedH = 800 / (9/16)
+      expect(r.height, closeTo(0.1 * 800 / (9 / 16), 1e-6));
+    });
+
+    test('zero-area placement → null', () {
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.5, 0.5, 0.5, 0.5),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(450, 800),
+      );
+      expect(r, isNull);
+    });
+
+    test('clamps when the box overhangs the visible region', () {
+      // Off-center face that reaches past the right edge — should
+      // still fit horizontally, with its right edge clamped to the
+      // screen width.
+      final r = coverFitRect(
+        normalizedBounds: const Rect.fromLTRB(0.9, 0.4, 1.2, 0.6),
+        previewAspectRatio: 9 / 16,
+        screenSize: const Size(450, 800),
+      )!;
+      expect(r.right, closeTo(450, 1e-6));
+    });
+  });
 }
 
 class _ErroringRepo implements LobbyRepository {

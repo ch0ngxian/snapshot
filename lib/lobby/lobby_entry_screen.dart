@@ -102,6 +102,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
         lobbyId: lobbyId,
         currentUid: widget.currentUid,
         cameraFactory: widget.cameraFactory,
+        faceTrackerFactory: widget.faceTrackerFactory,
       ),
     ));
   }
