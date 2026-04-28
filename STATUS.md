@@ -35,7 +35,7 @@ Replaces the `image_picker` shutter hand-off with a long-lived rear-camera previ
 | Step | Scope | Status |
 |---|---|---|
 | 1 | Live `CameraPreview` + HUD layout (lives top-left, timer top-center, opponents top-right, shutter bottom-center) + bottom-half tap-to-fire zone + portrait lock + `RoundCamera` lifecycle abstraction | ✅ shipped (PR #21) |
-| 2 | Cooldown ring around the shutter + haptics + timer urgency ramp (amber under 60s, red+pulsing under 10s) | ❌ TODO |
+| 2 | Cooldown ring around the shutter + haptics + timer urgency ramp (amber under 60s, red+pulsing under 10s) | ✅ shipped (PR #23) |
 | 3 | Live face-detection reticle (white → green when target is centered) | ❌ TODO |
 | 4 | "You got hit" feedback — red flash, camera shake, heart pulse-out, vibration | ❌ TODO |
 | 5 | Live kill feed toasts ("Alice → Bob (2 left)") | ❌ TODO |
@@ -46,6 +46,7 @@ Real-device smoke test for step 1 still pending — see PR #21 test plan checkli
 
 ## Recent session changes (2026-04-28)
 
+- **Immersive viewfinder step 2 shipped (PR #23).** Cooldown ring sweeps around the shutter for the 5s post-fire window (amber arc, drains 12 o'clock clockwise). Shutter + tap-to-fire zone gate themselves while the ring is sweeping; client-side no-face bail does NOT engage cooldown. Haptics layered onto every verdict (selectionClick on press, mediumImpact on hit, double `heavyImpact` on elimination, lightImpact on miss/immune/cooldown). Timer color ramps white → amber under 60s → red + pulsing under 10s. Cooldown verdict now suppresses the redundant "Slow down" toast (the ring already says it).
 - **Immersive viewfinder step 1 shipped (PR #21).** Round screen rebuilt as a full-bleed `CameraPreview` with HUD overlay (hearts top-left, mm:ss timer top-center, opponents+scoreboard top-right, shutter bottom-center) and a bottom-half tap-to-fire zone. New `RoundCamera` abstraction owns the camera lifecycle (init / pause on background / resume / dispose). `cameraFactory` threaded through `SnapshotApp` → lobby flow so widget tests inject `FakeRoundCamera`. Real-device smoke test still pending.
 - Bumped `mobile_scanner` 5.x → 7.x to resolve the MLKit version conflict on iOS pod install (PR #18 merged; iOS `pod install` + device QR-scan smoke test still pending — see PR #18 test plan).
 - Deployed Phase 1+2 callables, firestore/storage rules, and remote config to `cx-snapshot` (was previously stuck on `deleteUserData` only).
@@ -55,11 +56,11 @@ Real-device smoke test for step 1 still pending — see PR #21 test plan checkli
 
 ## Where you are right now
 
-First playable build is live and the full `submitTag` pipeline has been validated solo. The immersive viewfinder rebuild has begun (step 1 of 7 shipped). Remaining v1 work splits between finishing the viewfinder polish loop, hardening edge cases, building the threshold-tuning tool, and getting the app into testers' hands.
+First playable build is live and the full `submitTag` pipeline has been validated solo. The immersive viewfinder rebuild is 2 of 7 steps in. Remaining v1 work splits between finishing the viewfinder polish loop, hardening edge cases, building the threshold-tuning tool, and getting the app into testers' hands.
 
 ## Three natural next directions
 
-- **Immersive viewfinder steps 2–4** → cooldown ring + haptics, face-detection reticle, "you got hit" feedback. The "feel" uplift the rebuild was for; each step is independently mergeable.
+- **Immersive viewfinder steps 3–4** → live face-detection reticle (white→green when target is centered), then "you got hit" feedback (red flash, camera shake, heart pulse-out, vibration). Each step is independently mergeable.
 - **Data-driven iteration** → PR-A (BigQuery view + threshold tuning script). Lets you tune from the data you generate.
 - **Multi-device readiness** → PR-B (host-disconnect + mutual-elim) → privacy policy → TestFlight + Android internal track.
 
