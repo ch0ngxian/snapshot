@@ -170,6 +170,37 @@ class InMemoryLobbyRepository implements LobbyRepository {
     _emitLobby(lobbyId);
   }
 
+  /// Test-only: simulate a server-side hit landing on [uid]. Decrements
+  /// [livesLost] from `livesRemaining` (clamped at zero) and flips the
+  /// player's status to eliminated when lives reach zero. Re-emits the
+  /// players stream so subscribers observe the same delta the real
+  /// `submitTag` write path would surface. The in-memory tag repo
+  /// returns canned verdicts without mutating any player state, so the
+  /// "you got hit" feedback path is otherwise unreachable from tests.
+  void debugApplyHit(
+    String lobbyId,
+    String uid, {
+    int livesLost = 1,
+  }) {
+    final state = _lobbies[lobbyId];
+    if (state == null) return;
+    final player = state.players[uid];
+    if (player == null) return;
+    final newLives = (player.livesRemaining - livesLost).clamp(0, 1 << 31);
+    state.players[uid] = LobbyPlayer(
+      uid: player.uid,
+      displayName: player.displayName,
+      livesRemaining: newLives,
+      status: newLives == 0
+          ? LobbyPlayerStatus.eliminated
+          : player.status,
+      joinedAt: player.joinedAt,
+      embeddingSnapshot: player.embeddingSnapshot,
+      embeddingModelVersion: player.embeddingModelVersion,
+    );
+    _emitPlayers(lobbyId);
+  }
+
   /// Test-only: backdate `startedAt` so [RoundScreen] tests can drive the
   /// timer past expiry without actually waiting. Real Firestore writes
   /// `startedAt` via `serverTimestamp()`.
