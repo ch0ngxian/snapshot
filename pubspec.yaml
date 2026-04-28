@@ -23,7 +23,7 @@ dependencies:
 
   # Lobby flow (per tech-plan §5.3)
   qr_flutter: ^4.1.0                     # render the join QR (host waiting room)
-  mobile_scanner: ^5.2.0                 # scan the join QR (joiner flow)
+  mobile_scanner: ^7.2.0                 # scan the join QR (joiner flow); 7.x pulls GoogleMLKit 9.x, matching google_mlkit_face_detection
 
   # Face pipeline (per tech-plan.md §5.7)
   google_mlkit_face_detection: ^0.13.0  # detect & crop largest face
@@ -32,6 +32,9 @@ dependencies:
 
   # Onboarding (per tech-plan.md §2)
   image_picker: ^1.1.0                   # selfie capture via system camera
+
+  # Resume-on-relaunch (auto-rejoin into the active lobby/round)
+  shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:
