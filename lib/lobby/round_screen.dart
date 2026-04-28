@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
@@ -16,6 +17,13 @@ import '../services/tag_id.dart';
 import '../services/tag_repository.dart';
 import 'round_results_screen.dart';
 import 'scoreboard_sheet.dart';
+
+/// Per-shooter cooldown duration. Mirrors `COOLDOWN_MS` in
+/// `functions/src/submitTag.ts`; the client-side ring is purely visual
+/// (the server is the source of truth) but the local copy lets us
+/// disable the shutter and animate the sweep without waiting on a
+/// network round-trip.
+const _kCooldownDuration = Duration(seconds: 5);
 
 /// In-round screen — primary surface during an active lobby.
 ///
@@ -83,6 +91,12 @@ class _RoundScreenState extends State<RoundScreen>
   late final RoundCamera _camera;
   Object? _cameraInitError;
   bool _cameraReady = false;
+  /// Anchor for the shutter cooldown ring. Set to the moment of the
+  /// most recent server verdict that would have bumped the server-side
+  /// `lastTagAttemptAt` (hit / no_match / immune). Null when no ring is
+  /// in flight. The 1Hz ticker recomputes [_onCooldown] each second so
+  /// the shutter re-enables itself once the window expires.
+  DateTime? _cooldownStart;
   // Cached so the 1Hz setState rebuild doesn't hand StreamBuilder a new
   // Stream instance every tick — that triggers a resubscribe and a one-
   // frame ConnectionState.waiting, which renders as a full-screen flash.
@@ -211,9 +225,23 @@ class _RoundScreenState extends State<RoundScreen>
     );
   }
 
+  /// True iff a per-shooter cooldown is in effect against [widget.clock].
+  bool get _onCooldown {
+    final start = _cooldownStart;
+    if (start == null) return false;
+    return widget.clock().difference(start) < _kCooldownDuration;
+  }
+
   Future<void> _onShutter() async {
     if (_shooting) return;
+    // Defense-in-depth — the shutter button + tap-to-fire zone are
+    // already null-handled while on cooldown, but a fast double-tap can
+    // race the rebuild that flips them. The server enforces the 5s
+    // window too; this just keeps the UI honest.
+    if (_onCooldown) return;
     if (_lobby?.status != LobbyStatus.active) return;
+    // Light tick on press (GAMEPLAY.md "haptics on every verdict").
+    unawaited(HapticFeedback.selectionClick());
     setState(() {
       _shooting = true;
       _toast = null;
@@ -234,7 +262,9 @@ class _RoundScreenState extends State<RoundScreen>
       } on NoFaceDetectedException {
         // Per §313: the client short-circuits to "no match" without
         // calling submitTag — saves a Function invocation and the user
-        // gets faster feedback than a server round-trip.
+        // gets faster feedback than a server round-trip. No cooldown
+        // either — explicit GAMEPLAY.md call-out: "no cooldown wasted".
+        unawaited(HapticFeedback.lightImpact());
         _showToast(_Toast.localNoMatch());
         if (!mounted) return;
         setState(() => _shooting = false);
@@ -249,10 +279,17 @@ class _RoundScreenState extends State<RoundScreen>
         modelVersion: widget.embedder.modelVersion,
       );
 
-      _showToast(_Toast.fromSubmission(
-        submission,
-        targetName: _displayNameOf(submission),
-      ));
+      _hapticForVerdict(submission);
+      _engageCooldownFor(submission.result);
+
+      // GAMEPLAY.md §107: on a `cooldown` verdict the ring already says
+      // "you're shooting too fast" — suppressing the redundant toast.
+      if (submission.result != TagResult.cooldown) {
+        _showToast(_Toast.fromSubmission(
+          submission,
+          targetName: _displayNameOf(submission),
+        ));
+      }
 
       if (submission.retainPhoto) {
         // Fire-and-forget per §122 — verdict toast is the user-facing
@@ -288,6 +325,48 @@ class _RoundScreenState extends State<RoundScreen>
     // to a generic "you hit someone" — the scoreboard reflects the lives
     // change immediately. Improving this is a polish-PR item.
     return null;
+  }
+
+  /// GAMEPLAY.md "haptics on every verdict":
+  /// - **hit (non-elim)** → success bump.
+  /// - **elimination** → double thud (a heavy impact, then a second one
+  ///   ~90ms later — close enough that they read as a single "kill"
+  ///   beat without merging into one buzz).
+  /// - **miss / immune / cooldown** → soft buzz.
+  void _hapticForVerdict(TagSubmission s) {
+    switch (s.result) {
+      case TagResult.hit:
+        if (s.eliminated ?? false) {
+          unawaited(HapticFeedback.heavyImpact());
+          Future.delayed(const Duration(milliseconds: 90), () {
+            unawaited(HapticFeedback.heavyImpact());
+          });
+        } else {
+          unawaited(HapticFeedback.mediumImpact());
+        }
+        break;
+      case TagResult.noMatch:
+      case TagResult.immune:
+      case TagResult.cooldown:
+        unawaited(HapticFeedback.lightImpact());
+        break;
+    }
+  }
+
+  /// Anchors [_cooldownStart] off the verdict that just landed. Hit /
+  /// no_match / immune all bump the server's `lastTagAttemptAt`, so
+  /// they re-arm a fresh 5s window; a `cooldown` verdict means the
+  /// server's anchor wasn't moved, so we leave a still-running local
+  /// ring alone — only re-arming if the local one had already drained
+  /// (clock skew or post-restart, where the server is still cooling
+  /// from a pre-restart attempt we no longer remember).
+  void _engageCooldownFor(TagResult result) {
+    if (result == TagResult.cooldown) {
+      if (_onCooldown) return;
+      setState(() => _cooldownStart = widget.clock());
+      return;
+    }
+    setState(() => _cooldownStart = widget.clock());
   }
 
   void _showToast(_Toast toast) {
@@ -376,6 +455,7 @@ class _RoundScreenState extends State<RoundScreen>
           // — Phase 2+ if it's ever added — re-evaluates immediately.
           _maybeEnd(lobby);
         }
+        final canFire = !_shooting && !_onCooldown;
         return _RoundShell(
           lobby: lobby,
           remaining: _remaining(lobby),
@@ -384,11 +464,14 @@ class _RoundScreenState extends State<RoundScreen>
           cameraInitError: _cameraInitError,
           shooting: _shooting,
           toast: _toast,
-          onShutter: _shooting ? null : _onShutter,
+          onShutter: canFire ? _onShutter : null,
           onOpenScoreboard: _openScoreboard,
           repo: widget.repo,
           lobbyId: widget.lobbyId,
           currentUid: widget.currentUid,
+          cooldownStart: _cooldownStart,
+          cooldownDuration: _kCooldownDuration,
+          clock: widget.clock,
         );
       },
     );
@@ -411,6 +494,9 @@ class _RoundShell extends StatelessWidget {
   final LobbyRepository repo;
   final String lobbyId;
   final String currentUid;
+  final DateTime? cooldownStart;
+  final Duration cooldownDuration;
+  final DateTime Function() clock;
 
   const _RoundShell({
     required this.lobby,
@@ -425,6 +511,9 @@ class _RoundShell extends StatelessWidget {
     required this.repo,
     required this.lobbyId,
     required this.currentUid,
+    required this.cooldownStart,
+    required this.cooldownDuration,
+    required this.clock,
   });
 
   @override
@@ -527,6 +616,9 @@ class _RoundShell extends StatelessWidget {
                         key: RoundScreen.shutterKey,
                         busy: shooting,
                         onPressed: onShutter,
+                        cooldownStart: cooldownStart,
+                        cooldownDuration: cooldownDuration,
+                        clock: clock,
                       ),
                     ),
                   ),
@@ -601,28 +693,98 @@ class _CameraUnavailableBackdrop extends StatelessWidget {
   }
 }
 
-class _Countdown extends StatelessWidget {
+/// Countdown pill with the GAMEPLAY.md "urgency ramp": white above 60s,
+/// amber under 60s, red and pulsing under 10s. The pulse is a subtle
+/// scale wobble — large enough to read as "hurry up" without obscuring
+/// the digits.
+class _Countdown extends StatefulWidget {
   final Duration? remaining;
   const _Countdown({required this.remaining});
 
   @override
+  State<_Countdown> createState() => _CountdownState();
+}
+
+class _CountdownState extends State<_Countdown>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
+    _syncPulse(widget.remaining);
+  }
+
+  @override
+  void didUpdateWidget(covariant _Countdown old) {
+    super.didUpdateWidget(old);
+    _syncPulse(widget.remaining);
+  }
+
+  /// `repeat(reverse: true)` while in the red zone, idle otherwise. We
+  /// don't run the controller continuously because `pumpAndSettle` in
+  /// widget tests would loop forever on a non-terminating animation.
+  void _syncPulse(Duration? remaining) {
+    final shouldPulse = _isPulseBand(remaining);
+    if (shouldPulse && !_pulse.isAnimating) {
+      _pulse.repeat(reverse: true);
+    } else if (!shouldPulse && _pulse.isAnimating) {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  static bool _isPulseBand(Duration? r) {
+    if (r == null) return false;
+    return r.inMilliseconds > 0 && r.inSeconds < 10;
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final r = remaining ?? Duration.zero;
+    final r = widget.remaining ?? Duration.zero;
     final mm = r.inMinutes.toString().padLeft(2, '0');
     final ss = (r.inSeconds % 60).toString().padLeft(2, '0');
-    // Translucent pill — colour ramp (amber/red) is step 2.
-    return _HudPill(
-      child: Text(
-        '$mm:$ss',
-        style: const TextStyle(
-          fontSize: 36,
-          fontWeight: FontWeight.bold,
-          color: Colors.white,
-          fontFeatures: [FontFeature.tabularFigures()],
-          letterSpacing: 0.5,
-        ),
+    final color = _colorFor(r);
+    final pulsing = _isPulseBand(widget.remaining);
+    final text = Text(
+      '$mm:$ss',
+      key: const ValueKey('round-countdown-text'),
+      style: TextStyle(
+        fontSize: 36,
+        fontWeight: FontWeight.bold,
+        color: color,
+        fontFeatures: const [FontFeature.tabularFigures()],
+        letterSpacing: 0.5,
       ),
     );
+    return _HudPill(
+      child: AnimatedBuilder(
+        animation: _pulse,
+        builder: (_, child) {
+          // 1.0 → 1.10 scale on the pulse band; identity scale otherwise.
+          final scale = pulsing ? 1.0 + (_pulse.value * 0.10) : 1.0;
+          return Transform.scale(scale: scale, child: child);
+        },
+        child: text,
+      ),
+    );
+  }
+
+  static Color _colorFor(Duration r) {
+    final s = r.inSeconds;
+    if (s < 10) return Colors.redAccent;
+    if (s < 60) return Colors.amberAccent;
+    return Colors.white;
   }
 }
 
@@ -797,14 +959,93 @@ class _HudPill extends StatelessWidget {
   }
 }
 
-class _ShutterButton extends StatelessWidget {
+class _ShutterButton extends StatefulWidget {
   final bool busy;
   final VoidCallback? onPressed;
-  const _ShutterButton({super.key, required this.busy, required this.onPressed});
+  /// Wall-clock instant the most recent shot landed (any non-cooldown
+  /// verdict). Null when no cooldown is in flight. The ring sweeps from
+  /// this moment forward by [cooldownDuration] of real time, regardless
+  /// of the parent's injected [clock] — the animation needs to tick
+  /// against the real frame clock so it stays smooth across rebuilds.
+  final DateTime? cooldownStart;
+  final Duration cooldownDuration;
+  /// Same clock the parent uses to decide whether the shutter is
+  /// gated. We use it once on mount / didUpdateWidget to compute how
+  /// much of the cooldown has already elapsed, so a rebuild that
+  /// remounts mid-cooldown picks up the right starting fraction.
+  final DateTime Function() clock;
+
+  const _ShutterButton({
+    super.key,
+    required this.busy,
+    required this.onPressed,
+    required this.cooldownStart,
+    required this.cooldownDuration,
+    required this.clock,
+  });
+
+  @override
+  State<_ShutterButton> createState() => _ShutterButtonState();
+}
+
+class _ShutterButtonState extends State<_ShutterButton>
+    with SingleTickerProviderStateMixin {
+  /// 0.0 = cooldown just started; 1.0 = cooldown complete (ring not
+  /// drawn). Driven by [AnimationController.animateTo] so the sweep
+  /// uses the real frame clock instead of timer setStates.
+  late final AnimationController _ring;
+
+  @override
+  void initState() {
+    super.initState();
+    _ring = AnimationController(
+      vsync: this,
+      duration: widget.cooldownDuration,
+      value: 1.0,
+    );
+    if (widget.cooldownStart != null) _animateRing(widget.cooldownStart!);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ShutterButton old) {
+    super.didUpdateWidget(old);
+    if (widget.cooldownStart != old.cooldownStart) {
+      if (widget.cooldownStart == null) {
+        _ring
+          ..stop()
+          ..value = 1.0;
+      } else {
+        _animateRing(widget.cooldownStart!);
+      }
+    }
+  }
+
+  void _animateRing(DateTime start) {
+    final totalMs = widget.cooldownDuration.inMilliseconds;
+    final elapsedMs = widget.clock().difference(start).inMilliseconds;
+    if (elapsedMs >= totalMs) {
+      _ring.value = 1.0;
+      return;
+    }
+    final clamped = elapsedMs.clamp(0, totalMs);
+    _ring.value = clamped / totalMs;
+    _ring.animateTo(
+      1.0,
+      duration: Duration(milliseconds: totalMs - clamped),
+      curve: Curves.linear,
+    );
+  }
+
+  @override
+  void dispose() {
+    _ring.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final disabled = onPressed == null;
+    final disabled = widget.onPressed == null;
+    final busy = widget.busy;
     // Wrapped with Semantics(button: true) so screen readers announce
     // it as a button with the right enabled/disabled state, and with
     // Material+InkResponse so it gets standard ripple feedback on tap
@@ -817,49 +1058,112 @@ class _ShutterButton extends StatelessWidget {
         type: MaterialType.transparency,
         shape: const CircleBorder(),
         child: InkResponse(
-          onTap: onPressed,
+          onTap: widget.onPressed,
           containedInkWell: true,
           customBorder: const CircleBorder(),
           radius: 44,
-          child: Container(
+          child: SizedBox(
             width: 88,
             height: 88,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              // Outer ring + inner disc — classic shutter affordance, sized
-              // big enough to thumb-tap without looking. The cooldown ring
-              // (step 2) will replace the static outer border.
-              color: Colors.transparent,
-              border: Border.all(
-                color: disabled ? Colors.white24 : Colors.white,
-                width: 4,
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: disabled
-                      ? Colors.white24
-                      : (busy ? Colors.white70 : Colors.white),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Layer 1 — static outer border + sweep arc, painted
+                // together so the cooldown ring overlays cleanly on the
+                // muted base ring.
+                Positioned.fill(
+                  child: AnimatedBuilder(
+                    animation: _ring,
+                    builder: (_, _) => CustomPaint(
+                      painter: _ShutterRingPainter(
+                        cooldownProgress: _ring.value,
+                        disabled: disabled,
+                      ),
+                    ),
+                  ),
                 ),
-                child: busy
-                    ? const Padding(
-                        padding: EdgeInsets.all(20),
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          valueColor: AlwaysStoppedAnimation(Colors.black54),
-                        ),
-                      )
-                    : null,
-              ),
+                // Layer 2 — inner disc. Stays bright while the ring
+                // sweeps so the button still reads as "alive"; disabled
+                // (eliminated / round-over) goes greyed out.
+                Center(
+                  child: Container(
+                    width: 76,
+                    height: 76,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: disabled
+                          ? Colors.white24
+                          : (busy ? Colors.white70 : Colors.white),
+                    ),
+                    child: busy
+                        ? const Padding(
+                            padding: EdgeInsets.all(20),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              valueColor:
+                                  AlwaysStoppedAnimation(Colors.black54),
+                            ),
+                          )
+                        : null,
+                  ),
+                ),
+              ],
             ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Paints the shutter outer ring and (while in cooldown) the sweeping
+/// arc that visualises the per-shooter cooldown.
+class _ShutterRingPainter extends CustomPainter {
+  /// 0.0 = ring just started sweeping; 1.0 = sweep complete.
+  final double cooldownProgress;
+  final bool disabled;
+  const _ShutterRingPainter({
+    required this.cooldownProgress,
+    required this.disabled,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const stroke = 4.0;
+    final radius = (size.shortestSide - stroke) / 2;
+    final center = Offset(size.width / 2, size.height / 2);
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    final cooling = cooldownProgress < 1.0;
+    // Static base ring. Muted while a sweep is in flight so the swept
+    // (un-drawn) sector reads as "the part you've earned back" and the
+    // un-swept arc reads as "still cooling".
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..color = disabled
+          ? Colors.white24
+          : (cooling ? Colors.white24 : Colors.white);
+    canvas.drawCircle(center, radius, base);
+
+    if (cooling) {
+      // 12 o'clock start, clockwise sweep. The painted arc is the
+      // *remaining* cooldown — it shrinks toward the 12 o'clock origin
+      // as the cooldown elapses, so the ring "drains".
+      final sweptAngle = cooldownProgress * 2 * pi;
+      final remainingAngle = 2 * pi - sweptAngle;
+      final ring = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke
+        ..strokeCap = StrokeCap.round
+        ..color = Colors.amberAccent;
+      canvas.drawArc(rect, -pi / 2 + sweptAngle, remainingAngle, false, ring);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ShutterRingPainter old) =>
+      old.cooldownProgress != cooldownProgress || old.disabled != disabled;
 }
 
 class _Toast {
