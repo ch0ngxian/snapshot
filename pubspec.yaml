@@ -33,6 +33,9 @@ dependencies:
   # Onboarding (per tech-plan.md §2)
   image_picker: ^1.1.0                   # selfie capture via system camera
 
+  # Resume-on-relaunch (auto-rejoin into the active lobby/round)
+  shared_preferences: ^2.3.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

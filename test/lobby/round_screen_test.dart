@@ -10,6 +10,7 @@ import 'package:snapshot/models/lobby.dart';
 import 'package:snapshot/models/lobby_player.dart';
 import 'package:snapshot/services/lobby_repository.dart';
 import 'package:snapshot/services/tag_repository.dart';
+import 'package:snapshot/services/testing/in_memory_active_lobby_store.dart';
 import 'package:snapshot/services/testing/in_memory_lobby_repository.dart';
 import 'package:snapshot/services/testing/in_memory_tag_repository.dart';
 
@@ -59,6 +60,7 @@ void main() {
           repo: ctx.repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           pickPhoto: () async => null,
@@ -96,6 +98,7 @@ void main() {
           repo: ctx.repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           pickPhoto: () async => _fakeJpegBytes,
@@ -137,6 +140,7 @@ void main() {
           repo: ctx.repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           pickPhoto: () async => _fakeJpegBytes,
@@ -171,6 +175,7 @@ void main() {
           embedder: const FakeFaceEmbedder(
             throwOnEmbed: NoFaceDetectedException(),
           ),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           pickPhoto: () async => _fakeJpegBytes,
@@ -201,6 +206,7 @@ void main() {
           repo: ctx.repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           pickPhoto: () async => null,
@@ -234,6 +240,7 @@ void main() {
           repo: ctx.repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
           pickPhoto: () async => null,
@@ -256,6 +263,7 @@ void main() {
           repo: repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
           pickPhoto: () async => null,
@@ -279,6 +287,7 @@ void main() {
           repo: repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
           pickPhoto: () async => null,
@@ -303,6 +312,7 @@ void main() {
           repo: repo,
           tags: tags,
           embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
           pickPhoto: () async => null,

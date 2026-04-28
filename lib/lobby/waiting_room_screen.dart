@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -5,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../face/face_embedder.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
+import '../services/active_lobby_store.dart';
 import '../services/lobby_repository.dart';
 import '../services/tag_repository.dart';
 import 'round_screen.dart';
@@ -19,6 +22,7 @@ class WaitingRoomScreen extends StatefulWidget {
   final LobbyRepository repo;
   final TagRepository tags;
   final FaceEmbedder embedder;
+  final ActiveLobbyStore activeLobbies;
   final String lobbyId;
   final String currentUid;
 
@@ -27,6 +31,7 @@ class WaitingRoomScreen extends StatefulWidget {
     required this.repo,
     required this.tags,
     required this.embedder,
+    required this.activeLobbies,
     required this.lobbyId,
     required this.currentUid,
   });
@@ -43,7 +48,17 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
   LobbyRules? _rules;
   bool _starting = false;
   bool _routedToRound = false;
+  bool _clearedOnUnavailable = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    // Persist the active lobbyId so a kill-and-relaunch can drop the user
+    // back into this screen. Cleared in [_routeToRound] is intentional —
+    // RoundScreen re-saves on init, keeping the resume hint live.
+    unawaited(widget.activeLobbies.save(widget.lobbyId));
+  }
 
   Future<void> _start() async {
     final rules = _rules;
@@ -75,11 +90,18 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
           repo: widget.repo,
           tags: widget.tags,
           embedder: widget.embedder,
+          activeLobbies: widget.activeLobbies,
           lobbyId: widget.lobbyId,
           currentUid: widget.currentUid,
         ),
       ),
     );
+  }
+
+  void _clearStoredLobbyOnce() {
+    if (_clearedOnUnavailable) return;
+    _clearedOnUnavailable = true;
+    unawaited(widget.activeLobbies.clear());
   }
 
   @override
@@ -100,6 +122,9 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
         }
         final lobby = snap.data;
         if (lobby == null) {
+          // Lobby vanished — drop the resume hint so a relaunch doesn't
+          // try to take the user back into a dead lobby.
+          _clearStoredLobbyOnce();
           return const _LobbyUnavailable(
             message: "This lobby no longer exists or couldn't be found.",
           );

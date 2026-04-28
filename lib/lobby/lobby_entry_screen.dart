@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../face/face_embedder.dart';
+import '../services/active_lobby_store.dart';
 import '../services/lobby_repository.dart';
 import '../services/tag_repository.dart';
 import 'join_lobby_screen.dart';
@@ -12,6 +13,7 @@ class LobbyEntryScreen extends StatefulWidget {
   final LobbyRepository repo;
   final TagRepository tags;
   final FaceEmbedder embedder;
+  final ActiveLobbyStore activeLobbies;
   final String currentUid;
   final String displayName;
 
@@ -24,6 +26,7 @@ class LobbyEntryScreen extends StatefulWidget {
     required this.repo,
     required this.tags,
     required this.embedder,
+    required this.activeLobbies,
     required this.currentUid,
     required this.displayName,
     this.child,
@@ -51,6 +54,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
           repo: widget.repo,
           tags: widget.tags,
           embedder: widget.embedder,
+          activeLobbies: widget.activeLobbies,
           lobbyId: created.lobbyId,
           currentUid: widget.currentUid,
         ),
@@ -81,6 +85,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
         repo: widget.repo,
         tags: widget.tags,
         embedder: widget.embedder,
+        activeLobbies: widget.activeLobbies,
         lobbyId: lobbyId,
         currentUid: widget.currentUid,
       ),
