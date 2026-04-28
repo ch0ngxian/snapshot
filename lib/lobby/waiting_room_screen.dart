@@ -55,8 +55,9 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
   void initState() {
     super.initState();
     // Persist the active lobbyId so a kill-and-relaunch can drop the user
-    // back into this screen. Cleared in [_routeToRound] is intentional —
-    // RoundScreen re-saves on init, keeping the resume hint live.
+    // back into this screen. We deliberately don't clear on the route to
+    // RoundScreen — RoundScreen re-saves on init, keeping the resume hint
+    // live across the waiting → active transition.
     unawaited(widget.activeLobbies.save(widget.lobbyId));
   }
 

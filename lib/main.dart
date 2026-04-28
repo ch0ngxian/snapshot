@@ -169,9 +169,11 @@ class _SnapshotAppState extends State<SnapshotApp> {
 
   /// Reads the persisted active lobbyId (if any) and resolves it to a
   /// resume target. A target is only returned when the lobby still exists
-  /// and is in `waiting` or `active`. Anything else (ended round, deleted
-  /// lobby, network timeout) clears the persisted state and returns null
-  /// so app launch never blocks on a flaky read.
+  /// and is in `waiting` or `active`. Terminal states (the doc is gone or
+  /// already `ended`) clear the persisted id so we don't loop on a dead
+  /// lobby. Transient errors (timeout, network hiccup) skip resume for
+  /// this boot but deliberately leave the stored id in place so the next
+  /// launch can try again — assuming the user really is mid-game.
   Future<_ResumeTarget?> _resolveResume() async {
     final stored = await widget.activeLobbies.read();
     if (stored == null) return null;
@@ -186,9 +188,8 @@ class _SnapshotAppState extends State<SnapshotApp> {
       }
       return _ResumeTarget(lobbyId: lobby.lobbyId, status: lobby.status);
     } catch (_) {
-      // Don't block boot on a network hiccup — drop the resume hint and
-      // let the user re-enter the lobby manually if needed. Leave the
-      // stored id alone so the next launch can retry.
+      // Transient — don't block boot, don't clear the hint. Next launch
+      // will retry the lookup. (Terminal cases are handled above.)
       return null;
     }
   }
