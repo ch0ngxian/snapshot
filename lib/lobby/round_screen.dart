@@ -27,6 +27,71 @@ import 'scoreboard_sheet.dart';
 /// network round-trip.
 const _kCooldownDuration = Duration(seconds: 5);
 
+/// How long the "you got hit" feedback (red flash + camera shake +
+/// heart pulse) plays for. Short — long enough to register but short
+/// enough to clear before the player can frame their next shot.
+const _kHitFeedbackDuration = Duration(milliseconds: 450);
+
+/// Stable signal raised by [_RoundScreenState] when its own lives drop.
+/// Children (lives indicator, viewfinder shake wrapper, flash overlay)
+/// react by playing a one-shot animation keyed off [at]; the rest of
+/// the rebuild path is unchanged.
+@immutable
+class _HitEvent {
+  /// Wall-clock instant the drop was detected (from the injected clock).
+  /// Doubles as the animation key — distinct timestamps mean distinct
+  /// hits, so a second hit while the first is still playing re-arms.
+  final DateTime at;
+
+  /// Lives count *before* the hit landed. The heart at index
+  /// `livesBeforeHit - 1` is the one that just got knocked out, so the
+  /// pulse-out animation runs on that specific heart.
+  final int livesBeforeHit;
+
+  const _HitEvent({required this.at, required this.livesBeforeHit});
+}
+
+/// Plays a one-shot animation each time the host widget's `eventAt`
+/// returns a fresh, non-null timestamp. Used by the three "you got
+/// hit" feedback channels (red flash, viewfinder shake, heart pulse-
+/// out) — they all share the same "play once per [_HitEvent.at]"
+/// trigger semantics, and centralising the controller + dedupe guard
+/// means the three keep their playback timing in lock-step.
+mixin _PlayOnEventTimestamp<T extends StatefulWidget> on State<T>
+    implements TickerProvider {
+  AnimationController? _eventController;
+  DateTime? _lastEventAt;
+
+  AnimationController get eventController => _eventController!;
+
+  void initEventController(Duration duration) {
+    _eventController = AnimationController(vsync: this, duration: duration);
+  }
+
+  /// Subclasses return the current event timestamp (or null). Called
+  /// from `initState` and `didUpdateWidget` — a fresh timestamp
+  /// restarts the animation from zero; a repeated timestamp is a
+  /// no-op so a parent rebuild during playback doesn't reset the run.
+  DateTime? eventTimestamp();
+
+  void maybePlayOnEvent() {
+    final at = eventTimestamp();
+    if (at == null) return;
+    if (_lastEventAt == at) return;
+    _lastEventAt = at;
+    eventController
+      ..stop()
+      ..value = 0
+      ..forward();
+  }
+
+  @override
+  void dispose() {
+    _eventController?.dispose();
+    super.dispose();
+  }
+}
+
 /// In-round screen — primary surface during an active lobby.
 ///
 /// Built as the immersive viewfinder GAMEPLAY.md describes: the rear
@@ -119,10 +184,27 @@ class _RoundScreenState extends State<RoundScreen>
   // replay-on-subscribe behaviour fires.
   late final Stream<Lobby?> _lobbyStream;
 
+  // "You got hit" detection. The state class subscribes to the same
+  // players stream the HUD chips do (Firestore deduplicates listeners
+  // on identical queries) and watches the local player's lives counter
+  // for drops. When a drop is observed, we raise [_hitEvent] which
+  // children watch for the one-shot flash / shake / heart-pulse
+  // animations. The first emission only seeds [_lastObservedLives] —
+  // we never flash on the initial subscription or on auto-rejoin
+  // (where the player might be mounting back in with already-reduced
+  // lives from a hit they took before relaunching).
+  StreamSubscription<List<LobbyPlayer>>? _playersSub;
+  int? _lastObservedLives;
+  _HitEvent? _hitEvent;
+  Timer? _hitClearTimer;
+
   @override
   void initState() {
     super.initState();
     _lobbyStream = widget.repo.watchLobby(widget.lobbyId);
+    _playersSub = widget.repo
+        .watchPlayers(widget.lobbyId)
+        .listen(_onPlayersUpdate);
     _camera = widget.cameraFactory();
     WidgetsBinding.instance.addObserver(this);
     // Lock to portrait for the round — the HUD layout assumes a tall
@@ -173,6 +255,8 @@ class _RoundScreenState extends State<RoundScreen>
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _toastTimer?.cancel();
+    _hitClearTimer?.cancel();
+    unawaited(_playersSub?.cancel());
     unawaited(_faceSub?.cancel());
     final tracker = _faceTracker;
     if (tracker != null) unawaited(tracker.dispose());
@@ -226,6 +310,44 @@ class _RoundScreenState extends State<RoundScreen>
     setState(() {});
     final lobby = _lobby;
     if (lobby != null) _maybeEnd(lobby);
+  }
+
+  /// Watches the local player's lives counter for drops. The first
+  /// emission seeds [_lastObservedLives] without firing feedback —
+  /// otherwise an auto-rejoin into a round where you've already been
+  /// hit would replay the flash on cold launch. Subsequent strict
+  /// decreases raise a [_HitEvent] that the flash overlay, viewfinder
+  /// shake wrapper, and lives indicator key off of.
+  void _onPlayersUpdate(List<LobbyPlayer> players) {
+    if (!mounted) return;
+    final me = players
+        .where((p) => p.uid == widget.currentUid)
+        .firstOrNull;
+    if (me == null) return;
+    final previous = _lastObservedLives;
+    _lastObservedLives = me.livesRemaining;
+    if (previous == null) return;
+    if (me.livesRemaining < previous) {
+      _triggerHitFeedback(livesBeforeHit: previous);
+    }
+  }
+
+  void _triggerHitFeedback({required int livesBeforeHit}) {
+    final at = widget.clock();
+    // Heavy buzz on the victim side — distinct from the per-verdict
+    // shooter haptics that fire from `_hapticForVerdict`.
+    unawaited(HapticFeedback.heavyImpact());
+    setState(() {
+      _hitEvent = _HitEvent(at: at, livesBeforeHit: livesBeforeHit);
+    });
+    _hitClearTimer?.cancel();
+    // Auto-clear so the overlay stack returns to a "no hit in flight"
+    // baseline; without this a stale event would stick around forever
+    // and rebuild against the same hit-key on every parent rebuild.
+    _hitClearTimer = Timer(_kHitFeedbackDuration, () {
+      if (!mounted) return;
+      setState(() => _hitEvent = null);
+    });
   }
 
   Duration? _remaining(Lobby lobby) {
@@ -521,6 +643,7 @@ class _RoundScreenState extends State<RoundScreen>
           cooldownDuration: _kCooldownDuration,
           clock: widget.clock,
           trackedFace: _trackedFace,
+          hitEvent: _hitEvent,
         );
       },
     );
@@ -547,6 +670,7 @@ class _RoundShell extends StatelessWidget {
   final Duration cooldownDuration;
   final DateTime Function() clock;
   final TrackedFace? trackedFace;
+  final _HitEvent? hitEvent;
 
   const _RoundShell({
     required this.lobby,
@@ -565,6 +689,7 @@ class _RoundShell extends StatelessWidget {
     required this.cooldownDuration,
     required this.clock,
     required this.trackedFace,
+    required this.hitEvent,
   });
 
   @override
@@ -583,30 +708,50 @@ class _RoundShell extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Layer 1 — live preview. SizedBox.expand + FittedBox makes
-            // the preview cover the entire screen even when its native
-            // aspect ratio doesn't match the device's; cropping the
-            // sides is the right call for an immersive HUD.
+            // Layers 1 + 1.5 — live preview + reticle, wrapped in the
+            // viewfinder shake so a "you got hit" event jolts the
+            // world but leaves the HUD steady. Shaking the HUD too
+            // reads as "the screen is broken"; jolting just the
+            // viewfinder reads as "the world rocked" (GAMEPLAY.md
+            // §117).
             Positioned.fill(
-              child: cameraInitError != null
-                  ? const _CameraUnavailableBackdrop()
-                  : _ViewfinderBackdrop(camera: camera, ready: cameraReady),
-            ),
+              child: _ViewfinderShake(
+                hitEvent: hitEvent,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // Layer 1 — live preview. SizedBox.expand +
+                    // FittedBox makes the preview cover the entire
+                    // screen even when its native aspect ratio doesn't
+                    // match the device's; cropping the sides is the
+                    // right call for an immersive HUD.
+                    Positioned.fill(
+                      child: cameraInitError != null
+                          ? const _CameraUnavailableBackdrop()
+                          : _ViewfinderBackdrop(
+                              camera: camera, ready: cameraReady),
+                    ),
 
-            // Layer 1.5 — live face-detection reticle. Visible only
-            // when the tracker is currently locked onto a face;
-            // otherwise it renders nothing. Wrapped in IgnorePointer
-            // so it never wins the hit-test against the tap-to-fire
-            // zone or the shutter (GAMEPLAY.md §78). The reticle
-            // applies the same `BoxFit.cover` transform the preview
-            // uses, so its position lines up with the cropped /
-            // scaled preview pixels rather than drifting on devices
-            // whose screen aspect ratio differs from the camera's.
-            Positioned.fill(
-              child: IgnorePointer(
-                child: _FaceReticle(
-                  face: trackedFace,
-                  previewAspectRatio: camera.previewAspectRatio,
+                    // Layer 1.5 — live face-detection reticle.
+                    // Visible only when the tracker is currently
+                    // locked onto a face; otherwise it renders
+                    // nothing. Wrapped in IgnorePointer so it never
+                    // wins the hit-test against the tap-to-fire zone
+                    // or the shutter (GAMEPLAY.md §78). The reticle
+                    // applies the same `BoxFit.cover` transform the
+                    // preview uses, so its position lines up with the
+                    // cropped / scaled preview pixels rather than
+                    // drifting on devices whose screen aspect ratio
+                    // differs from the camera's.
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: _FaceReticle(
+                          face: trackedFace,
+                          previewAspectRatio: camera.previewAspectRatio,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -629,6 +774,17 @@ class _RoundShell extends StatelessWidget {
               ),
             ),
 
+            // Layer 2.5 — "you got hit" red flash. Sits above the
+            // viewfinder + tap-to-fire zone but is `IgnorePointer`'d
+            // so it never blocks input. Painted full-bleed (outside
+            // the SafeArea) so the flash bleeds into the notch /
+            // status bar — the moment is supposed to be jarring.
+            Positioned.fill(
+              child: IgnorePointer(
+                child: _HitFlashOverlay(hitEvent: hitEvent),
+              ),
+            ),
+
             // Layer 3 — HUD overlay. SafeArea so nothing collides with
             // the notch / status bar / home indicator.
             SafeArea(
@@ -643,6 +799,7 @@ class _RoundShell extends StatelessWidget {
                       lobbyId: lobbyId,
                       currentUid: currentUid,
                       startingLives: lobby.rules.startingLives,
+                      hitEvent: hitEvent,
                     ),
                   ),
 
@@ -861,16 +1018,28 @@ class _CountdownState extends State<_Countdown>
 /// filled heart per remaining life and one outline per lost life, up to
 /// the lobby's starting count. When the player is eliminated the row
 /// goes grey.
+///
+/// On a hit, the just-lost heart (the one whose index matches
+/// `hitEvent.livesBeforeHit - 1`) plays a one-shot pulse-out — scale
+/// up, fade out — before settling into its outline state.
 class _LivesIndicator extends StatefulWidget {
+  /// Stable key on the heart that's actively pulsing out. Surfaced so
+  /// widget tests can verify the right heart is being animated without
+  /// reaching into private types.
+  static const Key kPulsingHeartKey = ValueKey('round-pulsing-heart');
+
   final LobbyRepository repo;
   final String lobbyId;
   final String currentUid;
   final int startingLives;
+  final _HitEvent? hitEvent;
+
   const _LivesIndicator({
     required this.repo,
     required this.lobbyId,
     required this.currentUid,
     required this.startingLives,
+    required this.hitEvent,
   });
 
   @override
@@ -896,20 +1065,24 @@ class _LivesIndicatorState extends State<_LivesIndicator> {
         );
         final eliminated = me.status == LobbyPlayerStatus.eliminated;
         final lives = me.livesRemaining.clamp(0, widget.startingLives);
+        // Index of the heart that's currently pulsing out, if any.
+        // The player can be re-hit while still within the prior hit's
+        // animation window (since immunity is shorter on the server
+        // for low values), so we re-key on `hitEvent.at`.
+        final hit = widget.hitEvent;
+        final pulsingIndex = (hit != null && !eliminated)
+            ? (hit.livesBeforeHit - 1).clamp(0, widget.startingLives - 1)
+            : null;
         return _HudPill(
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               for (var i = 0; i < widget.startingLives; i++) ...[
                 if (i > 0) const SizedBox(width: 4),
-                Icon(
-                  i < lives ? Icons.favorite : Icons.favorite_border,
-                  size: 22,
-                  color: eliminated
-                      ? Colors.white24
-                      : (i < lives
-                          ? Colors.redAccent.shade100
-                          : Colors.white38),
+                _HeartIcon(
+                  filled: i < lives,
+                  eliminated: eliminated,
+                  pulse: i == pulsingIndex ? hit : null,
                 ),
               ],
               if (eliminated) ...[
@@ -940,6 +1113,219 @@ class _LivesIndicatorState extends State<_LivesIndicator> {
     embeddingSnapshot: Float32List(0),
     embeddingModelVersion: '',
   );
+}
+
+/// Individual heart slot in the lives row. Renders a static
+/// filled/outline icon by default; when [pulse] is non-null AND
+/// matches a "fresh" event, runs a one-shot scale-up + fade-out so the
+/// heart visibly *leaves* the row instead of just blinking to outline.
+class _HeartIcon extends StatefulWidget {
+  final bool filled;
+  final bool eliminated;
+  /// The hit event currently animating this heart. `null` for hearts
+  /// that aren't the just-lost slot. The widget keys its animation off
+  /// `pulse.at`, so a new event with a later timestamp restarts the
+  /// pulse from zero (lets a victim re-hit during their own pulse
+  /// re-trigger the animation, even though server immunity makes that
+  /// rare).
+  final _HitEvent? pulse;
+
+  const _HeartIcon({
+    required this.filled,
+    required this.eliminated,
+    required this.pulse,
+  });
+
+  @override
+  State<_HeartIcon> createState() => _HeartIconState();
+}
+
+class _HeartIconState extends State<_HeartIcon>
+    with SingleTickerProviderStateMixin, _PlayOnEventTimestamp<_HeartIcon> {
+  @override
+  DateTime? eventTimestamp() => widget.pulse?.at;
+
+  @override
+  void initState() {
+    super.initState();
+    initEventController(_kHitFeedbackDuration);
+    maybePlayOnEvent();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HeartIcon old) {
+    super.didUpdateWidget(old);
+    maybePlayOnEvent();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = widget.eliminated
+        ? Colors.white24
+        : (widget.filled ? Colors.redAccent.shade100 : Colors.white38);
+    // Key attaches whenever the parent has flagged this slot as the
+    // newly-lost heart, regardless of whether the controller is
+    // mid-frame — the pulse window is always exactly the same as the
+    // parent's `_hitEvent` window, and gating on `isAnimating` would
+    // make the key flicker as the controller starts/completes within
+    // that window.
+    final iconKey =
+        widget.pulse != null ? _LivesIndicator.kPulsingHeartKey : null;
+    final iconData =
+        widget.filled ? Icons.favorite : Icons.favorite_border;
+    final base = Icon(iconData, size: 22, color: color, key: iconKey);
+    if (widget.pulse == null) {
+      return SizedBox(width: 22, height: 22, child: base);
+    }
+    return SizedBox(
+      width: 22,
+      height: 22,
+      child: AnimatedBuilder(
+        animation: eventController,
+        builder: (_, _) {
+          final t = eventController.value;
+          // Two layers: the static base heart in its post-hit state,
+          // and a "ghost" of the pre-hit filled heart scaling up and
+          // fading out on top — reads as the life *leaving*.
+          final scale = 1.0 + 0.8 * t;
+          final opacity = (1.0 - t).clamp(0.0, 1.0);
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              base,
+              Transform.scale(
+                scale: scale,
+                child: Opacity(
+                  opacity: opacity,
+                  child: Icon(
+                    Icons.favorite,
+                    size: 22,
+                    color: Colors.redAccent.shade100,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Full-bleed red flash that fades in fast and out slow on a hit
+/// event. IgnorePointer is applied at the call site so it never
+/// blocks the tap-to-fire zone; this widget is purely visual.
+class _HitFlashOverlay extends StatefulWidget {
+  static const Key kFlashKey = ValueKey('round-hit-flash');
+
+  final _HitEvent? hitEvent;
+  const _HitFlashOverlay({required this.hitEvent});
+
+  @override
+  State<_HitFlashOverlay> createState() => _HitFlashOverlayState();
+}
+
+class _HitFlashOverlayState extends State<_HitFlashOverlay>
+    with
+        SingleTickerProviderStateMixin,
+        _PlayOnEventTimestamp<_HitFlashOverlay> {
+  @override
+  DateTime? eventTimestamp() => widget.hitEvent?.at;
+
+  @override
+  void initState() {
+    super.initState();
+    initEventController(_kHitFeedbackDuration);
+    maybePlayOnEvent();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HitFlashOverlay old) {
+    super.didUpdateWidget(old);
+    maybePlayOnEvent();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // When there's no hit in flight, drop the overlay entirely — keeps
+    // the build cheap on the 99% of frames that aren't recovering
+    // from a hit. The parent clears `hitEvent` after
+    // `_kHitFeedbackDuration`, so this only renders during that
+    // window.
+    if (widget.hitEvent == null) return const SizedBox.shrink();
+    return AnimatedBuilder(
+      animation: eventController,
+      builder: (_, _) {
+        final t = eventController.value;
+        // Curve: snap to peak alpha quickly, then fade. 0.0 → 0.55 by
+        // t=0.15, decaying linearly to 0 at t=1.
+        final alpha = t < 0.15
+            ? (t / 0.15) * 0.55
+            : (1.0 - (t - 0.15) / 0.85) * 0.55;
+        return ColoredBox(
+          key: _HitFlashOverlay.kFlashKey,
+          color: Colors.redAccent.withValues(alpha: alpha.clamp(0.0, 1.0)),
+        );
+      },
+    );
+  }
+}
+
+/// Wraps the viewfinder layer (preview + reticle) in a brief horizontal
+/// shake when a hit lands. Driven by the same hit-event the flash and
+/// heart-pulse react to so the three feedback channels stay in lock-
+/// step. Keyed off `hitEvent.at` — a fresh timestamp restarts the
+/// shake from zero.
+class _ViewfinderShake extends StatefulWidget {
+  final _HitEvent? hitEvent;
+  final Widget child;
+  const _ViewfinderShake({required this.hitEvent, required this.child});
+
+  @override
+  State<_ViewfinderShake> createState() => _ViewfinderShakeState();
+}
+
+class _ViewfinderShakeState extends State<_ViewfinderShake>
+    with
+        SingleTickerProviderStateMixin,
+        _PlayOnEventTimestamp<_ViewfinderShake> {
+  @override
+  DateTime? eventTimestamp() => widget.hitEvent?.at;
+
+  @override
+  void initState() {
+    super.initState();
+    initEventController(_kHitFeedbackDuration);
+    maybePlayOnEvent();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ViewfinderShake old) {
+    super.didUpdateWidget(old);
+    maybePlayOnEvent();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Skip the AnimatedBuilder wrapper entirely when the controller's
+    // settled — every parent rebuild (the 1Hz round ticker, lives /
+    // toast updates, etc.) lands here, and an idle AnimatedBuilder
+    // node would just be a wasted layer.
+    if (!eventController.isAnimating) return widget.child;
+    return AnimatedBuilder(
+      animation: eventController,
+      builder: (_, child) {
+        final t = eventController.value;
+        // Decaying sine — three full oscillations over the window,
+        // amplitude tapered by `(1 - t)` so the shake settles back to
+        // rest naturally instead of cutting off mid-swing.
+        const peakDx = 12.0;
+        final dx = sin(t * pi * 6) * peakDx * (1.0 - t);
+        return Transform.translate(offset: Offset(dx, 0), child: child);
+      },
+      child: widget.child,
+    );
+  }
 }
 
 class _OpponentsBadge extends StatefulWidget {

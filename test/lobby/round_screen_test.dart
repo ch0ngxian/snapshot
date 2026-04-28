@@ -825,6 +825,172 @@ void main() {
     });
   });
 
+  group('"you got hit" feedback', () {
+    testWidgets(
+        'no flash on initial mount even when player joins mid-hit',
+        (tester) async {
+      // Initial subscription replays the player's CURRENT lives.
+      // Auto-rejoin after a relaunch lands here with a possibly
+      // already-reduced lives count — we should NOT flash on that.
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+      // Pre-stage a hit so the very first players emission arrives
+      // with lives=2, not 3. Without the "first emission seeds the
+      // baseline" guard the screen would immediately flash on mount.
+      ctx.repo.debugApplyHit(ctx.lobbyId, 'host-1');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: InMemoryTagRepository.fromQueue(const <TagSubmission>[]),
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _fakeTrackerFactory(),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsNothing);
+      expect(find.byKey(const ValueKey('round-pulsing-heart')), findsNothing);
+
+      addTearDown(ctx.repo.dispose);
+    });
+
+    testWidgets('lives drop → flash + pulsing heart appear', (tester) async {
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: InMemoryTagRepository.fromQueue(const <TagSubmission>[]),
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _fakeTrackerFactory(),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+      // Baseline: 3 lives, no flash, no pulse.
+      expect(find.byIcon(Icons.favorite), findsNWidgets(3));
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsNothing);
+      expect(find.byKey(const ValueKey('round-pulsing-heart')), findsNothing);
+
+      // Server-side: a hit lands. Lives drop from 3 → 2.
+      ctx.repo.debugApplyHit(ctx.lobbyId, 'host-1');
+      // Two pumps without advancing time so the players-stream microtask
+      // fires AND the resulting setState rebuild lands AND the
+      // animation controllers tick at least one frame past their
+      // initial value=0 paint.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('round-pulsing-heart')),
+        findsOneWidget,
+      );
+      // Lives row is now 2 filled + 1 outline; the lost heart's slot
+      // shows the static outline behind the pulsing ghost.
+      expect(find.byIcon(Icons.favorite), findsNWidgets(3));
+      expect(find.byIcon(Icons.favorite_border), findsOneWidget);
+
+      // Animation completes — overlay clears.
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsNothing);
+      expect(find.byKey(const ValueKey('round-pulsing-heart')), findsNothing);
+
+      addTearDown(ctx.repo.dispose);
+    });
+
+    testWidgets('elimination (lives 1 → 0) still triggers flash',
+        (tester) async {
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+      // Pre-bring host down to 1 life so the next hit eliminates them.
+      // Initial subscription seeds the baseline at 1, so no flash yet.
+      ctx.repo.debugApplyHit(ctx.lobbyId, 'host-1', livesLost: 2);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: InMemoryTagRepository.fromQueue(const <TagSubmission>[]),
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _fakeTrackerFactory(),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsNothing);
+
+      // Knock-out hit. Status flips to eliminated and lives → 0.
+      ctx.repo.debugApplyHit(ctx.lobbyId, 'host-1');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsOneWidget);
+      // OUT badge appears once status is eliminated.
+      expect(find.text('OUT'), findsOneWidget);
+
+      addTearDown(ctx.repo.dispose);
+    });
+
+    testWidgets('repeat hit during animation re-arms the flash',
+        (tester) async {
+      // Server immunity makes back-to-back hits rare in practice, but
+      // the animation re-key should cope with it: a fresh hit-event
+      // with a later timestamp should restart the flash from full
+      // intensity rather than letting the in-flight one drift.
+      final ctx = await _activeLobby();
+      ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RoundScreen(
+            repo: ctx.repo,
+            tags: InMemoryTagRepository.fromQueue(const <TagSubmission>[]),
+            embedder: const FakeFaceEmbedder(),
+            activeLobbies: InMemoryActiveLobbyStore(),
+            lobbyId: ctx.lobbyId,
+            currentUid: 'host-1',
+            cameraFactory: _fakeCameraReturning(null),
+            faceTrackerFactory: _fakeTrackerFactory(),
+          ),
+        ),
+      );
+      await _settleShortOf1s(tester);
+
+      ctx.repo.debugApplyHit(ctx.lobbyId, 'host-1');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsOneWidget);
+
+      // Mid-flash, another hit lands.
+      await tester.pump(const Duration(milliseconds: 100));
+      ctx.repo.debugApplyHit(ctx.lobbyId, 'host-1');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+      // Flash is still on screen — re-armed against the fresh event.
+      expect(find.byKey(const ValueKey('round-hit-flash')), findsOneWidget);
+
+      addTearDown(ctx.repo.dispose);
+    });
+  });
+
   group('coverFitRect', () {
     test('matching aspect ratio → identity scaling', () {
       final r = coverFitRect(
