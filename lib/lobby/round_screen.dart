@@ -1,11 +1,11 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:flutter/services.dart';
 
+import '../camera/round_camera.dart';
 import '../face/face_embedder.dart';
 import '../face/no_face_detected_exception.dart';
 import '../models/lobby.dart';
@@ -17,12 +17,24 @@ import '../services/tag_repository.dart';
 import 'round_results_screen.dart';
 import 'scoreboard_sheet.dart';
 
-/// In-round screen — primary surface during an active lobby. Renders the
-/// timer, lives, alive count, a shutter button (tech-plan §72-§78), and
-/// surfaces tag verdicts as toasts. Subscribes to the lobby doc to (a)
-/// drive the countdown off `startedAt + durationSeconds` and (b) auto-
-/// route to [RoundResultsScreen] when status flips to `ended`.
+/// In-round screen — primary surface during an active lobby.
+///
+/// Built as the immersive viewfinder GAMEPLAY.md describes: the rear
+/// camera fills the screen for the full duration of the round, and the
+/// HUD (lives, timer, opponents-alive, shutter) floats on top in a
+/// translucent overlay. There's no "open the camera" hand-off — the
+/// camera *is* the game. Tapping the shutter (or anywhere in the bottom
+/// half of the screen) captures a frame, runs it through the on-device
+/// face embedder, and submits a tag.
 class RoundScreen extends StatefulWidget {
+  /// Stable key on the shutter button so widget tests can target it
+  /// without depending on the private `_ShutterButton` type.
+  static const Key shutterKey = ValueKey('round-shutter-button');
+
+  /// Stable key on the invisible bottom-half tap-to-fire zone — same
+  /// reason as [shutterKey], surfaced for tests.
+  static const Key tapToFireKey = ValueKey('round-tap-to-fire-zone');
+
   final LobbyRepository repo;
   final TagRepository tags;
   final FaceEmbedder embedder;
@@ -30,17 +42,17 @@ class RoundScreen extends StatefulWidget {
   final String lobbyId;
   final String currentUid;
 
-  /// Injectable shutter so widget tests can stub the camera path without
-  /// a real platform channel + file system. Returns the captured JPEG
-  /// bytes, or `null` if the user backed out of the camera. Production
-  /// uses [ImagePicker.pickImage] and `File.readAsBytes`.
-  final Future<Uint8List?> Function() pickPhoto;
+  /// Factory for the round's camera. Production hands back a
+  /// [PackageCameraRoundCamera]; widget tests inject [FakeRoundCamera]
+  /// so they don't need a live platform channel. Called once per
+  /// [RoundScreen] mount; the screen owns the lifecycle.
+  final RoundCamera Function() cameraFactory;
 
   /// Injectable clock for tests. Production uses [DateTime.now].
   final DateTime Function() clock;
 
-  // Cannot be `const` — the defaulting for `pickPhoto`/`clock` runs at
-  // construction time, which is non-const.
+  // Cannot be `const` — the defaulting for `cameraFactory`/`clock` runs
+  // at construction time, which is non-const.
   // ignore: prefer_const_constructors_in_immutables
   RoundScreen({
     super.key,
@@ -50,31 +62,17 @@ class RoundScreen extends StatefulWidget {
     required this.activeLobbies,
     required this.lobbyId,
     required this.currentUid,
-    Future<Uint8List?> Function()? pickPhoto,
+    RoundCamera Function()? cameraFactory,
     DateTime Function()? clock,
-  })  : pickPhoto = pickPhoto ?? _defaultPickPhoto,
+  })  : cameraFactory = cameraFactory ?? PackageCameraRoundCamera.new,
         clock = clock ?? DateTime.now;
-
-  static Future<Uint8List?> _defaultPickPhoto() async {
-    // image_picker over a custom in-app camera preview is a deliberate v1
-    // trade-off: ~500ms hand-off latency for system camera, vs the much
-    // larger surface of CameraController + lifecycle management. Re-visit
-    // for v2 polish (an embedded viewfinder is what the plan describes).
-    final picked = await ImagePicker().pickImage(
-      source: ImageSource.camera,
-      preferredCameraDevice: CameraDevice.rear,
-      maxWidth: 1280,
-      maxHeight: 1280,
-    );
-    if (picked == null) return null;
-    return File(picked.path).readAsBytes();
-  }
 
   @override
   State<RoundScreen> createState() => _RoundScreenState();
 }
 
-class _RoundScreenState extends State<RoundScreen> {
+class _RoundScreenState extends State<RoundScreen>
+    with WidgetsBindingObserver {
   Timer? _ticker;
   Lobby? _lobby;
   bool _endRequested = false;
@@ -82,10 +80,29 @@ class _RoundScreenState extends State<RoundScreen> {
   bool _shooting = false;
   _Toast? _toast;
   Timer? _toastTimer;
+  late final RoundCamera _camera;
+  Object? _cameraInitError;
+  bool _cameraReady = false;
+  // Cached so the 1Hz setState rebuild doesn't hand StreamBuilder a new
+  // Stream instance every tick — that triggers a resubscribe and a one-
+  // frame ConnectionState.waiting, which renders as a full-screen flash.
+  // The players stream is cached inside [_TopBar] for the same reason,
+  // but on its own lifecycle so its subscription is in place before any
+  // replay-on-subscribe behaviour fires.
+  late final Stream<Lobby?> _lobbyStream;
 
   @override
   void initState() {
     super.initState();
+    _lobbyStream = widget.repo.watchLobby(widget.lobbyId);
+    _camera = widget.cameraFactory();
+    WidgetsBinding.instance.addObserver(this);
+    // Lock to portrait for the round — the HUD layout assumes a tall
+    // viewfinder. Restored in dispose().
+    SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.portraitUp,
+    ]);
+    unawaited(_initCamera());
     // 1Hz tick is enough — display granularity is mm:ss and the
     // expiry-detect path is idempotent server-side anyway.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) => _onTick());
@@ -95,11 +112,50 @@ class _RoundScreenState extends State<RoundScreen> {
     unawaited(widget.activeLobbies.save(widget.lobbyId));
   }
 
+  Future<void> _initCamera() async {
+    try {
+      await _camera.initialize();
+      if (!mounted) return;
+      setState(() => _cameraReady = true);
+    } catch (e, st) {
+      debugPrint('RoundScreen camera init failed: $e\n$st');
+      if (!mounted) return;
+      setState(() => _cameraInitError = e);
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _toastTimer?.cancel();
+    unawaited(_camera.dispose());
+    SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Pause the camera when the app is backgrounded so we're not
+    // burning the sensor while no one's looking, and resume on return.
+    // The screen stays mounted (the lobby/round is still active) — only
+    // the platform camera is parked.
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        unawaited(_camera.pause());
+        break;
+      case AppLifecycleState.resumed:
+        unawaited(_camera.resume());
+        break;
+      case AppLifecycleState.detached:
+        break;
+    }
   }
 
   void _onTick() {
@@ -162,9 +218,9 @@ class _RoundScreenState extends State<RoundScreen> {
       _toast = null;
     });
     try {
-      // The picker returns null when the user backs out of the camera
-      // sheet without taking a photo — silent no-op, no toast.
-      final bytes = await widget.pickPhoto();
+      // captureFrame returns null when the camera isn't ready — silent
+      // no-op rather than a confusing toast (e.g. mid-init, mid-pause).
+      final bytes = await _camera.captureFrame();
       if (bytes == null) {
         if (!mounted) return;
         setState(() => _shooting = false);
@@ -280,7 +336,7 @@ class _RoundScreenState extends State<RoundScreen> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<Lobby?>(
-      stream: widget.repo.watchLobby(widget.lobbyId),
+      stream: _lobbyStream,
       builder: (context, lobbySnap) {
         if (lobbySnap.hasError) {
           // The stream blew up — stop the ticker so we don't keep firing
@@ -293,6 +349,7 @@ class _RoundScreenState extends State<RoundScreen> {
         }
         if (lobbySnap.connectionState == ConnectionState.waiting) {
           return const Scaffold(
+            backgroundColor: Colors.black,
             body: Center(child: CircularProgressIndicator()),
           );
         }
@@ -318,55 +375,223 @@ class _RoundScreenState extends State<RoundScreen> {
           // — Phase 2+ if it's ever added — re-evaluates immediately.
           _maybeEnd(lobby);
         }
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('Round in progress'),
-            automaticallyImplyLeading: false,
-            actions: [
-              IconButton(
-                tooltip: 'Open scoreboard',
-                onPressed: _openScoreboard,
-                icon: const Icon(Icons.leaderboard_outlined),
+        return _RoundShell(
+          lobby: lobby,
+          remaining: _remaining(lobby),
+          camera: _camera,
+          cameraReady: _cameraReady,
+          cameraInitError: _cameraInitError,
+          shooting: _shooting,
+          toast: _toast,
+          onShutter: _shooting ? null : _onShutter,
+          onOpenScoreboard: _openScoreboard,
+          repo: widget.repo,
+          lobbyId: widget.lobbyId,
+          currentUid: widget.currentUid,
+        );
+      },
+    );
+  }
+}
+
+/// The immersive viewfinder shell — full-bleed camera preview with the
+/// HUD stacked on top. Pulled out of the state class so the build path
+/// is easier to follow at a glance.
+class _RoundShell extends StatelessWidget {
+  final Lobby lobby;
+  final Duration? remaining;
+  final RoundCamera camera;
+  final bool cameraReady;
+  final Object? cameraInitError;
+  final bool shooting;
+  final _Toast? toast;
+  final VoidCallback? onShutter;
+  final VoidCallback onOpenScoreboard;
+  final LobbyRepository repo;
+  final String lobbyId;
+  final String currentUid;
+
+  const _RoundShell({
+    required this.lobby,
+    required this.remaining,
+    required this.camera,
+    required this.cameraReady,
+    required this.cameraInitError,
+    required this.shooting,
+    required this.toast,
+    required this.onShutter,
+    required this.onOpenScoreboard,
+    required this.repo,
+    required this.lobbyId,
+    required this.currentUid,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      // Approximation of the GAMEPLAY.md "swipe-up scoreboard sheet" —
+      // dragging up anywhere on the round surface opens the live
+      // scoreboard. Wraps the entire body so it competes with the tap-
+      // to-fire zone on velocity rather than position.
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onVerticalDragEnd: (details) {
+          if ((details.primaryVelocity ?? 0) < -250) onOpenScoreboard();
+        },
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Layer 1 — live preview. SizedBox.expand + FittedBox makes
+            // the preview cover the entire screen even when its native
+            // aspect ratio doesn't match the device's; cropping the
+            // sides is the right call for an immersive HUD.
+            Positioned.fill(
+              child: cameraInitError != null
+                  ? const _CameraUnavailableBackdrop()
+                  : _ViewfinderBackdrop(camera: camera, ready: cameraReady),
+            ),
+
+            // Layer 2 — invisible bottom-half tap-to-fire zone. Sits
+            // *under* the HUD so the shutter button + scoreboard icon
+            // win the hit-test when they overlap. Behaviour stays the
+            // same as the shutter: gated on (not currently shooting).
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              top: null,
+              height: MediaQuery.of(context).size.height / 2,
+              child: GestureDetector(
+                key: RoundScreen.tapToFireKey,
+                behavior: HitTestBehavior.translucent,
+                onTap: onShutter,
+                // No child — pure gesture catcher.
               ),
-            ],
-          ),
-          body: GestureDetector(
-            // Approximation of the §80 "swipe-up sheet" — drag up anywhere
-            // on the round surface opens the live scoreboard.
-            onVerticalDragEnd: (details) {
-              if ((details.primaryVelocity ?? 0) < -250) _openScoreboard();
-            },
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+            ),
+
+            // Layer 3 — HUD overlay. SafeArea so nothing collides with
+            // the notch / status bar / home indicator.
+            SafeArea(
+              child: Stack(
                 children: [
-                  _Countdown(remaining: _remaining(lobby)),
-                  const SizedBox(height: 16),
-                  _TopBar(
-                    repo: widget.repo,
-                    lobbyId: widget.lobbyId,
-                    currentUid: widget.currentUid,
+                  // Top-left — lives.
+                  Positioned(
+                    top: 16,
+                    left: 16,
+                    child: _LivesIndicator(
+                      repo: repo,
+                      lobbyId: lobbyId,
+                      currentUid: currentUid,
+                      startingLives: lobby.rules.startingLives,
+                    ),
                   ),
-                  const Spacer(),
-                  if (_toast != null) _ToastBanner(toast: _toast!),
-                  const SizedBox(height: 12),
-                  _ShutterButton(
-                    busy: _shooting,
-                    onPressed: _shooting ? null : _onShutter,
+
+                  // Top-center — timer.
+                  Positioned(
+                    top: 16,
+                    left: 0,
+                    right: 0,
+                    child: Center(child: _Countdown(remaining: remaining)),
                   ),
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: _openScoreboard,
-                    icon: const Icon(Icons.keyboard_arrow_up),
-                    label: const Text('Scoreboard'),
+
+                  // Top-right — opponents alive + tap-to-open scoreboard.
+                  Positioned(
+                    top: 16,
+                    right: 16,
+                    child: _OpponentsBadge(
+                      repo: repo,
+                      lobbyId: lobbyId,
+                      currentUid: currentUid,
+                      onTap: onOpenScoreboard,
+                    ),
+                  ),
+
+                  // Above the shutter — verdict toast.
+                  if (toast != null)
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 160,
+                      child: _ToastBanner(toast: toast!),
+                    ),
+
+                  // Bottom-center — shutter.
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 32,
+                    child: Center(
+                      child: _ShutterButton(
+                        key: RoundScreen.shutterKey,
+                        busy: shooting,
+                        onPressed: onShutter,
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ViewfinderBackdrop extends StatelessWidget {
+  final RoundCamera camera;
+  final bool ready;
+  const _ViewfinderBackdrop({required this.camera, required this.ready});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!ready) {
+      return const ColoredBox(
+        color: Colors.black,
+        child: Center(
+          child: CircularProgressIndicator(color: Colors.white70),
+        ),
+      );
+    }
+    // FittedBox(BoxFit.cover) keeps the preview filling the screen even
+    // when the camera's native aspect ratio is squarer/taller than the
+    // device — overflow is hidden behind the HUD instead of letterboxed.
+    return ClipRect(
+      child: SizedBox.expand(
+        child: FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            // Padding the preview to a known box gives FittedBox a
+            // sensible aspect-ratio cue. The actual size is irrelevant
+            // — FittedBox rescales — but we need *some* finite extent.
+            width: 100,
+            height: 160,
+            child: camera.previewWidget(context),
           ),
-        );
-      },
+        ),
+      ),
+    );
+  }
+}
+
+class _CameraUnavailableBackdrop extends StatelessWidget {
+  const _CameraUnavailableBackdrop();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            "Camera unavailable.\nGrant camera permission and re-open the round.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -380,57 +605,91 @@ class _Countdown extends StatelessWidget {
     final r = remaining ?? Duration.zero;
     final mm = r.inMinutes.toString().padLeft(2, '0');
     final ss = (r.inSeconds % 60).toString().padLeft(2, '0');
-    return Center(
+    // Translucent pill — colour ramp (amber/red) is step 2.
+    return _HudPill(
       child: Text(
         '$mm:$ss',
         style: const TextStyle(
-          fontSize: 64,
+          fontSize: 36,
           fontWeight: FontWeight.bold,
+          color: Colors.white,
           fontFeatures: [FontFeature.tabularFigures()],
+          letterSpacing: 0.5,
         ),
       ),
     );
   }
 }
 
-class _TopBar extends StatelessWidget {
+/// Hearts row driven by the player's live `livesRemaining`. Renders one
+/// filled heart per remaining life and one outline per lost life, up to
+/// the lobby's starting count. When the player is eliminated the row
+/// goes grey.
+class _LivesIndicator extends StatefulWidget {
   final LobbyRepository repo;
   final String lobbyId;
   final String currentUid;
-  const _TopBar({
+  final int startingLives;
+  const _LivesIndicator({
     required this.repo,
     required this.lobbyId,
     required this.currentUid,
+    required this.startingLives,
   });
+
+  @override
+  State<_LivesIndicator> createState() => _LivesIndicatorState();
+}
+
+class _LivesIndicatorState extends State<_LivesIndicator> {
+  // Cache the players stream so parent rebuilds (driven by the round's
+  // 1Hz countdown ticker) don't hand StreamBuilder a new Stream every
+  // tick and re-subscribe.
+  late final Stream<List<LobbyPlayer>> _playersStream =
+      widget.repo.watchPlayers(widget.lobbyId);
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<LobbyPlayer>>(
-      stream: repo.watchPlayers(lobbyId),
+      stream: _playersStream,
       builder: (context, snap) {
         final players = snap.data ?? const <LobbyPlayer>[];
         final me = players.firstWhere(
-          (p) => p.uid == currentUid,
+          (p) => p.uid == widget.currentUid,
           orElse: () => _missingPlayer,
         );
-        final aliveOpponents = players
-            .where((p) => p.uid != currentUid && p.status == LobbyPlayerStatus.alive)
-            .length;
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _Stat(
-              icon: Icons.favorite,
-              label: 'Lives',
-              value: me.livesRemaining.toString(),
-              eliminated: me.status == LobbyPlayerStatus.eliminated,
-            ),
-            _Stat(
-              icon: Icons.person_outline,
-              label: 'Opponents',
-              value: aliveOpponents.toString(),
-            ),
-          ],
+        final eliminated = me.status == LobbyPlayerStatus.eliminated;
+        final lives = me.livesRemaining.clamp(0, widget.startingLives);
+        return _HudPill(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < widget.startingLives; i++) ...[
+                if (i > 0) const SizedBox(width: 4),
+                Icon(
+                  i < lives ? Icons.favorite : Icons.favorite_border,
+                  size: 22,
+                  color: eliminated
+                      ? Colors.white24
+                      : (i < lives
+                          ? Colors.redAccent.shade100
+                          : Colors.white38),
+                ),
+              ],
+              if (eliminated) ...[
+                const SizedBox(width: 8),
+                const Text(
+                  'OUT',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ],
+            ],
+          ),
         );
       },
     );
@@ -447,44 +706,88 @@ class _TopBar extends StatelessWidget {
   );
 }
 
-class _Stat extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final bool eliminated;
-  const _Stat({
-    required this.icon,
-    required this.label,
-    required this.value,
-    this.eliminated = false,
+class _OpponentsBadge extends StatefulWidget {
+  final LobbyRepository repo;
+  final String lobbyId;
+  final String currentUid;
+  final VoidCallback onTap;
+  const _OpponentsBadge({
+    required this.repo,
+    required this.lobbyId,
+    required this.currentUid,
+    required this.onTap,
   });
 
   @override
+  State<_OpponentsBadge> createState() => _OpponentsBadgeState();
+}
+
+class _OpponentsBadgeState extends State<_OpponentsBadge> {
+  late final Stream<List<LobbyPlayer>> _playersStream =
+      widget.repo.watchPlayers(widget.lobbyId);
+
+  @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(
-          icon,
-          color: eliminated ? Theme.of(context).disabledColor : null,
-        ),
-        const SizedBox(width: 8),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
+    return StreamBuilder<List<LobbyPlayer>>(
+      stream: _playersStream,
+      builder: (context, snap) {
+        final players = snap.data ?? const <LobbyPlayer>[];
+        final aliveOpponents = players
+            .where((p) =>
+                p.uid != widget.currentUid &&
+                p.status == LobbyPlayerStatus.alive)
+            .length;
+        return GestureDetector(
+          onTap: widget.onTap,
+          child: _HudPill(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.person_outline,
+                  size: 18,
+                  color: Colors.white,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '$aliveOpponents',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Icon(
+                  Icons.leaderboard_outlined,
+                  size: 18,
+                  color: Colors.white70,
+                ),
+              ],
             ),
-            Text(
-              eliminated ? 'OUT' : value,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-      ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Translucent rounded pill used by every HUD chip. Centralised so the
+/// HUD stays visually coherent and any future tweaks (blur, tint) land
+/// in one place.
+class _HudPill extends StatelessWidget {
+  final Widget child;
+  const _HudPill({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: child,
     );
   }
 }
@@ -492,30 +795,46 @@ class _Stat extends StatelessWidget {
 class _ShutterButton extends StatelessWidget {
   final bool busy;
   final VoidCallback? onPressed;
-  const _ShutterButton({required this.busy, required this.onPressed});
+  const _ShutterButton({super.key, required this.busy, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: SizedBox(
-        width: 96,
-        height: 96,
-        child: FilledButton(
-          onPressed: onPressed,
-          style: FilledButton.styleFrom(
-            shape: const CircleBorder(),
-            padding: EdgeInsets.zero,
+    final disabled = onPressed == null;
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        width: 88,
+        height: 88,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          // Outer ring + inner disc — classic shutter affordance, sized
+          // big enough to thumb-tap without looking. The cooldown ring
+          // (step 2) will replace the static outer border.
+          color: Colors.transparent,
+          border: Border.all(
+            color: disabled ? Colors.white24 : Colors.white,
+            width: 4,
           ),
-          child: busy
-              ? const SizedBox(
-                  width: 32,
-                  height: 32,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation(Colors.white),
-                  ),
-                )
-              : const Icon(Icons.camera_alt, size: 36),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: disabled
+                  ? Colors.white24
+                  : (busy ? Colors.white70 : Colors.white),
+            ),
+            child: busy
+                ? const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      valueColor: AlwaysStoppedAnimation(Colors.black54),
+                    ),
+                  )
+                : null,
+          ),
         ),
       ),
     );
@@ -568,37 +887,44 @@ class _ToastBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     Color background;
     IconData icon;
+    Color iconColor;
     switch (toast.kind) {
       case _ToastKind.success:
-        background = Colors.green.shade100;
+        background = Colors.green.shade600.withValues(alpha: 0.85);
         icon = Icons.check_circle_outline;
+        iconColor = Colors.white;
         break;
       case _ToastKind.warning:
-        background = theme.colorScheme.surfaceContainerHighest;
+        background = Colors.black.withValues(alpha: 0.7);
         icon = Icons.info_outline;
+        iconColor = Colors.amberAccent;
         break;
       case _ToastKind.error:
-        background = theme.colorScheme.errorContainer;
+        background = Colors.red.shade700.withValues(alpha: 0.9);
         icon = Icons.error_outline;
+        iconColor = Colors.white;
         break;
     }
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: background,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
         children: [
-          Icon(icon),
+          Icon(icon, color: iconColor),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               toast.message,
-              style: const TextStyle(fontSize: 14),
+              style: const TextStyle(
+                fontSize: 14,
+                color: Colors.white,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
         ],

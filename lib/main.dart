@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'camera/round_camera.dart';
 import 'face/cosine_similarity.dart';
 import 'face/face_embedder.dart';
 import 'face/mobilefacenet_embedder.dart';
@@ -83,6 +84,10 @@ class SnapshotApp extends StatefulWidget {
   // ScaffoldMessenger key, which is owned by `_SnapshotAppState`.
   final TagPushListener Function(GlobalKey<ScaffoldMessengerState>)
       buildTagPushListener;
+  // Optional override for the in-round camera. Defaults to the real
+  // package:camera-backed implementation; widget tests inject a fake
+  // so they don't need a live platform channel.
+  final RoundCamera Function()? cameraFactory;
 
   const SnapshotApp({
     super.key,
@@ -94,6 +99,7 @@ class SnapshotApp extends StatefulWidget {
     required this.embedder,
     required this.activeLobbies,
     required this.buildTagPushListener,
+    this.cameraFactory,
   });
 
   @override
@@ -221,6 +227,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
               activeLobbies: widget.activeLobbies,
               lobbyId: resume.lobbyId,
               currentUid: profile.uid,
+              cameraFactory: widget.cameraFactory,
             ),
           ));
           break;
@@ -233,6 +240,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
               activeLobbies: widget.activeLobbies,
               lobbyId: resume.lobbyId,
               currentUid: profile.uid,
+              cameraFactory: widget.cameraFactory,
             ),
           ));
           break;
@@ -284,6 +292,7 @@ class _SnapshotAppState extends State<SnapshotApp> {
             lobbies: widget.lobbies,
             tags: widget.tags,
             activeLobbies: widget.activeLobbies,
+            cameraFactory: widget.cameraFactory,
           );
         },
       ),
@@ -352,12 +361,14 @@ class _Home extends StatefulWidget {
   final LobbyRepository lobbies;
   final TagRepository tags;
   final ActiveLobbyStore activeLobbies;
+  final RoundCamera Function()? cameraFactory;
   const _Home({
     required this.profile,
     required this.embedder,
     required this.lobbies,
     required this.tags,
     required this.activeLobbies,
+    this.cameraFactory,
   });
 
   @override
@@ -427,6 +438,7 @@ class _HomeState extends State<_Home> {
       activeLobbies: widget.activeLobbies,
       currentUid: widget.profile.uid,
       displayName: widget.profile.displayName,
+      cameraFactory: widget.cameraFactory,
       child: kDebugMode ? _verifyPanel() : null,
     );
   }

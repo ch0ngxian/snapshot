@@ -33,6 +33,11 @@ dependencies:
   # Onboarding (per tech-plan.md §2)
   image_picker: ^1.1.0                   # selfie capture via system camera
 
+  # In-round live viewfinder (GAMEPLAY.md "immersive viewfinder" — owns the
+  # camera lifecycle for the whole round, replaces the image_picker hand-off
+  # for the shutter path).
+  camera: ^0.11.0
+
   # Resume-on-relaunch (auto-rejoin into the active lobby/round)
   shared_preferences: ^2.3.0
 

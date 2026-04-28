@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../camera/round_camera.dart';
 import '../face/face_embedder.dart';
 import '../models/lobby.dart';
 import '../models/lobby_player.dart';
@@ -25,6 +26,10 @@ class WaitingRoomScreen extends StatefulWidget {
   final ActiveLobbyStore activeLobbies;
   final String lobbyId;
   final String currentUid;
+  // Optional test seam — forwarded to [RoundScreen] when the lobby
+  // flips to active. Production leaves it null so [RoundScreen] uses
+  // its real-camera default.
+  final RoundCamera Function()? cameraFactory;
 
   const WaitingRoomScreen({
     super.key,
@@ -34,6 +39,7 @@ class WaitingRoomScreen extends StatefulWidget {
     required this.activeLobbies,
     required this.lobbyId,
     required this.currentUid,
+    this.cameraFactory,
   });
 
   @override
@@ -94,6 +100,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
           activeLobbies: widget.activeLobbies,
           lobbyId: widget.lobbyId,
           currentUid: widget.currentUid,
+          cameraFactory: widget.cameraFactory,
         ),
       ),
     );

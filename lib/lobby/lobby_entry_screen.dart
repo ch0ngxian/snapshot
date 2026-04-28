@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../camera/round_camera.dart';
 import '../face/face_embedder.dart';
 import '../services/active_lobby_store.dart';
 import '../services/lobby_repository.dart';
@@ -21,6 +22,11 @@ class LobbyEntryScreen extends StatefulWidget {
   /// verification panel in debug builds).
   final Widget? child;
 
+  /// Optional test seam — passed straight through to [WaitingRoomScreen]
+  /// (and by extension to [RoundScreen]) so widget tests can inject a
+  /// fake camera.
+  final RoundCamera Function()? cameraFactory;
+
   const LobbyEntryScreen({
     super.key,
     required this.repo,
@@ -30,6 +36,7 @@ class LobbyEntryScreen extends StatefulWidget {
     required this.currentUid,
     required this.displayName,
     this.child,
+    this.cameraFactory,
   });
 
   @override
@@ -57,6 +64,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
           activeLobbies: widget.activeLobbies,
           lobbyId: created.lobbyId,
           currentUid: widget.currentUid,
+          cameraFactory: widget.cameraFactory,
         ),
       ));
       if (!mounted) return;
@@ -88,6 +96,7 @@ class _LobbyEntryScreenState extends State<LobbyEntryScreen> {
         activeLobbies: widget.activeLobbies,
         lobbyId: lobbyId,
         currentUid: widget.currentUid,
+        cameraFactory: widget.cameraFactory,
       ),
     ));
   }

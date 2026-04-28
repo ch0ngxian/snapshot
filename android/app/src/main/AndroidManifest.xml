@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- In-round live viewfinder uses the rear camera for the duration
+         of the round. The camera plugin requests this at runtime; the
+         declaration is required for the request to succeed on API 23+. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="snapshot"
         android:name="${applicationName}"

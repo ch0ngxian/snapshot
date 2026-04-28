@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:snapshot/camera/testing/fake_round_camera.dart';
 import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/lobby/round_screen.dart';
 import 'package:snapshot/lobby/rules_editor.dart';
@@ -25,6 +26,9 @@ Future<void> _pumpScreen(
       activeLobbies: InMemoryActiveLobbyStore(),
       lobbyId: lobbyId,
       currentUid: currentUid,
+      // Tests can't reach the real camera plugin, and the round screen
+      // is downstream of every Start path here — inject a no-op fake.
+      cameraFactory: () => FakeRoundCamera(),
     ),
   ));
   // Let stream subscriptions emit their initial values.

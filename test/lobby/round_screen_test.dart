@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:snapshot/camera/round_camera.dart';
+import 'package:snapshot/camera/testing/fake_round_camera.dart';
 import 'package:snapshot/face/no_face_detected_exception.dart';
 import 'package:snapshot/face/testing/fake_face_embedder.dart';
 import 'package:snapshot/lobby/round_results_screen.dart';
@@ -47,8 +49,15 @@ Future<void> _settleShortOf1s(WidgetTester tester) async {
 /// doesn't matter as long as it's non-empty (the fake hashes anything).
 final Uint8List _fakeJpegBytes = Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]);
 
+/// Factory that hands the screen a [FakeRoundCamera] preloaded with
+/// [bytes] on shutter capture. Returning a single instance per call is
+/// fine — the screen only constructs one camera per mount.
+RoundCamera Function() _fakeCameraReturning(Uint8List? bytes) {
+  return () => FakeRoundCamera(framePayload: bytes);
+}
+
 void main() {
-  testWidgets('renders countdown, lives, and alive count', (tester) async {
+  testWidgets('renders countdown, lives hearts, and alive count', (tester) async {
     final ctx = await _activeLobby();
     ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime(2026, 1, 1, 12));
     final now = DateTime(2026, 1, 1, 12, 0, 30);
@@ -63,7 +72,7 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
-          pickPhoto: () async => null,
+          cameraFactory: _fakeCameraReturning(null),
           clock: () => now,
         ),
       ),
@@ -73,9 +82,11 @@ void main() {
 
     // 60s round, 30s elapsed → 30s remaining.
     expect(find.text('00:30'), findsOneWidget);
-    // Top bar: 3 lives, 1 alive opponent.
-    expect(find.text('3'), findsOneWidget); // lives
-    expect(find.text('1'), findsOneWidget); // opponents alive
+    // 3 starting lives, none lost yet → 3 filled hearts, 0 outlines.
+    expect(find.byIcon(Icons.favorite), findsNWidgets(3));
+    expect(find.byIcon(Icons.favorite_border), findsNothing);
+    // Opponents-alive badge: 1 opponent.
+    expect(find.text('1'), findsOneWidget);
 
     addTearDown(ctx.repo.dispose);
   });
@@ -101,13 +112,13 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
-          pickPhoto: () async => _fakeJpegBytes,
+          cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
         ),
       ),
     );
     await _settleShortOf1s(tester);
 
-    await tester.tap(find.byIcon(Icons.camera_alt));
+    await tester.tap(find.byKey(RoundScreen.shutterKey));
     await _settleShortOf1s(tester);
 
     expect(tags.submissions, hasLength(1));
@@ -118,6 +129,41 @@ void main() {
     expect(find.textContaining('2 lives'), findsOneWidget);
     // retainPhoto was false → no upload.
     expect(tags.uploads, isEmpty);
+
+    addTearDown(ctx.repo.dispose);
+  });
+
+  testWidgets('tap-to-fire bottom zone fires the same as the shutter',
+      (tester) async {
+    final ctx = await _activeLobby();
+    ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+    final tags = InMemoryTagRepository.fromQueue([
+      const TagSubmission(
+        result: TagResult.noMatch,
+        retainPhoto: false,
+        tagId: '__placeholder__',
+      ),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
+          lobbyId: ctx.lobbyId,
+          currentUid: 'host-1',
+          cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
+        ),
+      ),
+    );
+    await _settleShortOf1s(tester);
+
+    await tester.tap(find.byKey(RoundScreen.tapToFireKey));
+    await _settleShortOf1s(tester);
+
+    expect(tags.submissions, hasLength(1));
+    expect(find.textContaining('No match'), findsOneWidget);
 
     addTearDown(ctx.repo.dispose);
   });
@@ -143,13 +189,13 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
-          pickPhoto: () async => _fakeJpegBytes,
+          cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
         ),
       ),
     );
     await _settleShortOf1s(tester);
 
-    await tester.tap(find.byIcon(Icons.camera_alt));
+    await tester.tap(find.byKey(RoundScreen.shutterKey));
     await _settleShortOf1s(tester);
 
     expect(find.textContaining('No match'), findsOneWidget);
@@ -178,13 +224,13 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
-          pickPhoto: () async => _fakeJpegBytes,
+          cameraFactory: _fakeCameraReturning(_fakeJpegBytes),
         ),
       ),
     );
     await _settleShortOf1s(tester);
 
-    await tester.tap(find.byIcon(Icons.camera_alt));
+    await tester.tap(find.byKey(RoundScreen.shutterKey));
     await _settleShortOf1s(tester);
 
     expect(find.textContaining('No face detected'), findsOneWidget);
@@ -194,7 +240,8 @@ void main() {
     addTearDown(ctx.repo.dispose);
   });
 
-  testWidgets('shutter → user cancels camera → no submission, no error',
+  testWidgets(
+      'shutter → camera not ready (captureFrame returns null) → no submission, no toast',
       (tester) async {
     final ctx = await _activeLobby();
     ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
@@ -209,13 +256,13 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
-          pickPhoto: () async => null,
+          cameraFactory: _fakeCameraReturning(null),
         ),
       ),
     );
     await _settleShortOf1s(tester);
 
-    await tester.tap(find.byIcon(Icons.camera_alt));
+    await tester.tap(find.byKey(RoundScreen.shutterKey));
     await _settleShortOf1s(tester);
 
     expect(tags.submissions, isEmpty);
@@ -243,7 +290,7 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: ctx.lobbyId,
           currentUid: 'host-1',
-          pickPhoto: () async => null,
+          cameraFactory: _fakeCameraReturning(null),
         ),
       ),
     );
@@ -266,7 +313,7 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
-          pickPhoto: () async => null,
+          cameraFactory: _fakeCameraReturning(null),
         ),
       ),
     );
@@ -290,7 +337,7 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
-          pickPhoto: () async => null,
+          cameraFactory: _fakeCameraReturning(null),
         ),
       ),
     );
@@ -315,7 +362,7 @@ void main() {
           activeLobbies: InMemoryActiveLobbyStore(),
           lobbyId: 'lobby-x',
           currentUid: 'host-1',
-          pickPhoto: () async => null,
+          cameraFactory: _fakeCameraReturning(null),
         ),
       ),
     );
@@ -323,6 +370,39 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
 
     expect(repo.endRoundCalls, isEmpty);
+  });
+
+  testWidgets('disposes the camera when the screen is unmounted',
+      (tester) async {
+    final ctx = await _activeLobby();
+    ctx.repo.debugForceStartedAt(ctx.lobbyId, DateTime.now());
+    final tags = InMemoryTagRepository.fromQueue(const <TagSubmission>[]);
+    final camera = FakeRoundCamera(framePayload: _fakeJpegBytes);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RoundScreen(
+          repo: ctx.repo,
+          tags: tags,
+          embedder: const FakeFaceEmbedder(),
+          activeLobbies: InMemoryActiveLobbyStore(),
+          lobbyId: ctx.lobbyId,
+          currentUid: 'host-1',
+          cameraFactory: () => camera,
+        ),
+      ),
+    );
+    await _settleShortOf1s(tester);
+    expect(camera.initializeCalls, 1);
+
+    // Replace the route with a blank screen — RoundScreen leaves the
+    // tree, dispose() should run.
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    await _settleShortOf1s(tester);
+
+    expect(camera.disposeCalls, greaterThanOrEqualTo(1));
+
+    addTearDown(ctx.repo.dispose);
   });
 }
 
