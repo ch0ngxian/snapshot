@@ -18,6 +18,7 @@ skills-lock.json
 # downloads the upstream frozen graph for conversion. None of these
 # should be committed.
 tools/.venv-build/
+tools/.venv-embed/
 tools/.build-model/
 assets/models/*.tflite
 
